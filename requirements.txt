@@ -4,3 +4,4 @@ flask-jwt-extended==4.6.0
 bcrypt==4.2.0
 python-dotenv==1.0.1
 gunicorn==23.0.0
+openai==1.37.1

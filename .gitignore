@@ -9,6 +9,7 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+.env
 .env.local
 .env.production
 .DS_Store

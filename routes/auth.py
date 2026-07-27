@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
-from models import create_user, get_user_by_email, get_user_by_id, user_to_public
+from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
@@ -139,6 +139,25 @@ def login():
 def me():
     user_id = int(get_jwt_identity())
     user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    return jsonify({'success': True, 'user': user_to_public(user)})
+
+
+@auth_bp.route('/me/preferences', methods=['PATCH', 'PUT'])
+@jwt_required()
+def update_preferences():
+    """Persist user preferences (notification toggles, etc.).
+
+    Accepts a partial patch of the preferences object; only known boolean keys
+    are stored. Response returns the full updated user (with merged prefs).
+    """
+    user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    prefs_patch = data.get('preferences') if isinstance(data, dict) else None
+    if not isinstance(prefs_patch, dict):
+        return jsonify({'success': False, 'message': 'preferences object required'}), 400
+    user = update_user_preferences(user_id, prefs_patch)
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     return jsonify({'success': True, 'user': user_to_public(user)})

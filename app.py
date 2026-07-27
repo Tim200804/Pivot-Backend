@@ -9,6 +9,7 @@ load_dotenv()
 from models import init_db
 from routes.auth import auth_bp
 from routes.ai import ai_bp
+from routes.schools import schools_bp
 
 
 def create_app():
@@ -25,6 +26,7 @@ def create_app():
     # Routes
     app.register_blueprint(auth_bp)
     app.register_blueprint(ai_bp)
+    app.register_blueprint(schools_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])

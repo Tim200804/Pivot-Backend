@@ -136,3 +136,63 @@ def ai_chat():
         return jsonify({'success': True, 'text': text})
     except Exception as e:
         return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+
+
+@ai_bp.route('/low-period-support', methods=['POST'])
+def ai_low_period_support():
+    data = request.get_json() or {}
+    athlete = data.get('athlete')
+    checkin = data.get('checkin')
+
+    if not athlete or not checkin:
+        return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
+
+    try:
+        client = _get_client()
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 503
+
+    data_summary = _build_data_summary(data)
+    prompt = (
+        f"{data_summary}\n\n"
+        "## Your task:\n"
+        "The athlete is currently in a low period. Generate personalized 'Low Period Support' content with exactly 3 cards.\n\n"
+        "Card 1 — 'You're Not Alone':\n"
+        "- A statistic or reassuring fact relevant to their situation\n"
+        "- 1-2 warm, normalizing sentences\n\n"
+        "Card 2 — 'You've Come Back Before':\n"
+        "- A highlight number based on their data (e.g., recovery count, days)\n"
+        "- 1-2 sentences referencing their resilience and past recovery\n\n"
+        "Card 3 — 'What You Can Do Now':\n"
+        "- 3 actionable, specific bullet points tailored to their sport, data, and current state\n\n"
+        "Return ONLY a valid JSON object in this exact format (no markdown, no code fences):\n"
+        '{\n'
+        '  "cards": [\n'
+        '    {"title": "You\'re Not Alone", "highlight": "44%", "body": "string text"},\n'
+        '    {"title": "You\'ve Come Back Before", "highlight": "3 times", "body": "string text"},\n'
+        '    {"title": "What You Can Do Now", "highlight": null, "body": ["action 1", "action 2", "action 3"]}\n'
+        '  ]\n'
+        '}'
+    )
+
+    try:
+        completion = client.chat.completions.create(
+            model='kimi-k2.6',
+            messages=[
+                {'role': 'system', 'content': _build_system_prompt()},
+                {'role': 'user', 'content': prompt},
+            ],
+            max_tokens=2000,
+        )
+        raw = completion.choices[0].message.content.strip()
+        # Clean up markdown code fences if present
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[1] if '\n' in raw else raw
+        if raw.endswith('```'):
+            raw = raw.rsplit('\n', 1)[0] if '\n' in raw else raw
+        if raw.startswith('json'):
+            raw = raw.split('\n', 1)[1] if '\n' in raw else raw
+        parsed = __import__('json').loads(raw)
+        return jsonify({'success': True, 'cards': parsed.get('cards', [])})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502

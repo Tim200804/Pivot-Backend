@@ -1,9 +1,13 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
+import re
 from models import create_user, get_user_by_email, get_user_by_id, user_to_public
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
+
+# RFC 5322 simplified email regex
+EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 
 
 def _hash_password(password: str) -> str:
@@ -12,6 +16,22 @@ def _hash_password(password: str) -> str:
 
 def _check_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+
+
+def _is_valid_email(email: str) -> bool:
+    return bool(EMAIL_RE.match(email))
+
+
+@auth_bp.route('/check-email', methods=['GET'])
+def check_email():
+    """Check whether an email is already registered."""
+    email = (request.args.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+    if not _is_valid_email(email):
+        return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+    exists = get_user_by_email(email) is not None
+    return jsonify({'success': True, 'available': not exists})
 
 
 @auth_bp.route('/register', methods=['POST'])
@@ -23,6 +43,9 @@ def register():
         return jsonify({'success': False, 'message': f'Missing fields: {", ".join(missing)}'}), 400
 
     email = data['email'].strip().lower()
+    if not _is_valid_email(email):
+        return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+
     if len(data['password']) < 6:
         return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
 

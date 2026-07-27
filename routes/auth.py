@@ -3,6 +3,7 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 import bcrypt
 import re
 from models import create_user, get_user_by_email, get_user_by_id, user_to_public
+from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
@@ -20,6 +21,36 @@ def _check_password(password: str, password_hash: str) -> bool:
 
 def _is_valid_email(email: str) -> bool:
     return bool(EMAIL_RE.match(email))
+
+
+@auth_bp.route('/options', methods=['GET'])
+def options():
+    """Return server-side whitelist of role/position/sport options.
+
+    Frontend MUST source these from this endpoint rather than hard-coding them,
+    so that the source of truth (and any security-sensitive filtering) lives on
+    the server.
+    """
+    role = (request.args.get('role') or '').strip().lower()
+    sport = (request.args.get('sport') or '').strip().lower()
+
+    payload = {
+        'success': True,
+        'sports': SPORTS,
+        'coachRoles': COACH_ROLES,
+    }
+
+    if role == 'athlete':
+        if sport in ATHLETE_POSITIONS_BY_SPORT:
+            payload['positions'] = ATHLETE_POSITIONS_BY_SPORT[sport]
+        elif sport:
+            payload['positions'] = []
+        else:
+            # Return positions for all sports when role=sport not specified
+            payload['positionsBySport'] = ATHLETE_POSITIONS_BY_SPORT
+    elif role == 'coach':
+        payload['positions'] = []
+    return jsonify(payload)
 
 
 @auth_bp.route('/check-email', methods=['GET'])
@@ -51,6 +82,22 @@ def register():
 
     if data['role'] not in ('athlete', 'coach'):
         return jsonify({'success': False, 'message': 'Role must be athlete or coach'}), 400
+
+    # Validate sport against server-side whitelist
+    sport = (data.get('sport') or '').strip().lower()
+    if sport not in SPORTS:
+        return jsonify({'success': False, 'message': f'Sport must be one of: {", ".join(SPORTS)}'}), 400
+
+    # Validate coach role / athlete position against server-side whitelist
+    if data['role'] == 'coach':
+        coach_role = (data.get('coachRole') or '').strip()
+        if coach_role not in COACH_ROLES:
+            return jsonify({'success': False, 'message': 'Invalid coach role'}), 400
+    else:  # athlete
+        position = (data.get('position') or '').strip()
+        valid_positions = ATHLETE_POSITIONS_BY_SPORT.get(sport, [])
+        if position not in valid_positions:
+            return jsonify({'success': False, 'message': 'Invalid position for selected sport'}), 400
 
     if get_user_by_email(email):
         return jsonify({'success': False, 'message': 'Email already registered'}), 409

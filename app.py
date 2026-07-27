@@ -10,6 +10,7 @@ from models import init_db
 from routes.auth import auth_bp
 from routes.ai import ai_bp
 from routes.schools import schools_bp
+from routes.messages import messages_bp
 
 
 def create_app():
@@ -27,6 +28,7 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(ai_bp)
     app.register_blueprint(schools_bp)
+    app.register_blueprint(messages_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])

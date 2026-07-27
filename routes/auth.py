@@ -144,6 +144,38 @@ def me():
     return jsonify({'success': True, 'user': user_to_public(user)})
 
 
+@auth_bp.route('/athletes', methods=['GET'])
+@jwt_required()
+def list_athletes():
+    """Return a lightweight directory of athletes (id + name + school) for
+    coaches who need to select a recipient for messages."""
+    from models import get_db
+    user_id = int(get_jwt_identity())
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if user['role'] != 'coach':
+        return jsonify({'success': False, 'message': 'Only coaches can list athletes'}), 403
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, school, sport, position FROM users WHERE role='athlete' ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        'success': True,
+        'athletes': [
+            {
+                'id': r['id'],
+                'name': r['name'],
+                'school': r['school'],
+                'sport': r['sport'],
+                'position': r['position'],
+            }
+            for r in rows
+        ]
+    })
+
+
 @auth_bp.route('/me/preferences', methods=['PATCH', 'PUT'])
 @jwt_required()
 def update_preferences():

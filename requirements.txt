@@ -5,4 +5,5 @@ bcrypt==4.2.0
 python-dotenv==1.0.1
 gunicorn==23.0.0
 openai==1.37.1
+httpx<0.28  # pinned: openai 1.37.1 incompatible with httpx 0.28+ (proxies param removed)
 requests==2.34.2

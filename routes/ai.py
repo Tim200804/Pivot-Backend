@@ -17,7 +17,7 @@ def _get_client():
         _kimi_client = OpenAI(
             api_key=api_key,
             base_url='https://api.moonshot.cn/v1',
-            timeout=60.0,
+            timeout=90.0,  # gunicorn timeout 120s, leave margin for 502/503 handlers
         )
     return _kimi_client
 

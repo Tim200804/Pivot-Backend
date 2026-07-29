@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from openai import OpenAI
-import os
+import os, json, traceback
 
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 
@@ -36,163 +36,198 @@ def _build_system_prompt():
 
 
 def _build_data_summary(data):
-    athlete = data.get('athlete', {})
-    checkin = data.get('checkin', {})
-    health = athlete.get('health', [])
+    try:
+        athlete = data.get('athlete') or {}
+        checkin = data.get('checkin') or {}
 
-    if not health:
-        return 'No health data available.'
+        if not isinstance(athlete, dict):
+            return 'Athlete data unavailable (invalid format).'
 
-    first = health[0]
-    last = health[-1]
-    avg_sleep = round(sum(h.get('sleepHours', 0) for h in health) / len(health), 1)
-    hrv_trend = 'declining' if last.get('hrv', 0) < first.get('hrv', 0) else 'improving'
+        health = athlete.get('health')
+        if not isinstance(health, list) or len(health) == 0:
+            return 'No health data available.'
 
-    return (
-        f"Athlete: {athlete.get('name', 'Unknown')}, {athlete.get('age', '-')}, "
-        f"{athlete.get('position', '-')}, {athlete.get('team', '-')}, {athlete.get('school', '-')}.\n"
-        f"Status: {athlete.get('status', '-')}. HRV {first.get('hrv')}→{last.get('hrv')} ({hrv_trend}). "
-        f"Sleep avg: {avg_sleep}h. Latest: Mood {checkin.get('mood', '-')}/5, Motivation {checkin.get('motivation', '-')}/10, "
-        f"Fatigue {checkin.get('fatigue', '-')}/10. Journal: \"{checkin.get('journal') or 'None'}\""
-    )
+        # Filter out non-dict items
+        valid_health = [h for h in health if isinstance(h, dict)]
+        if len(valid_health) == 0:
+            return 'No valid health data available.'
+
+        first = valid_health[0]
+        last = valid_health[-1]
+        avg_sleep = round(sum(h.get('sleepHours', 0) for h in valid_health) / len(valid_health), 1)
+        hrv_trend = 'declining' if last.get('hrv', 0) < first.get('hrv', 0) else 'improving'
+
+        return (
+            f"Athlete: {athlete.get('name', 'Unknown')}, {athlete.get('age', '-')}y, "
+            f"{athlete.get('position', '-')}, {athlete.get('team', '-')}, {athlete.get('school', '-')}.\n"
+            f"Status: {athlete.get('status', '-')}. HRV {first.get('hrv', '-')}→{last.get('hrv', '-')} ({hrv_trend}). "
+            f"Sleep avg: {avg_sleep}h. Latest: Mood {checkin.get('mood', '-')}/5, Motivation {checkin.get('motivation', '-')}/10, "
+            f"Fatigue {checkin.get('fatigue', '-')}/10. Journal: \"{checkin.get('journal') or 'None'}\""
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return f'Data summary unavailable ({str(e)}).'
 
 
 @ai_bp.route('/insight', methods=['POST'])
 def ai_insight():
-    data = request.get_json() or {}
-    athlete = data.get('athlete')
-    checkin = data.get('checkin')
-
-    if not athlete or not checkin:
-        return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
-
     try:
-        client = _get_client()
-    except RuntimeError as e:
-        return jsonify({'success': False, 'message': str(e)}), 503
+        data = request.get_json() or {}
+        athlete = data.get('athlete')
+        checkin = data.get('checkin')
 
-    data_summary = _build_data_summary(data)
-    prompt = (
-        f"{data_summary}\n\n"
-        "## Your task:\n"
-        "Write a 2-3 sentence personalized insight as their AI coach.\n"
-        "DO NOT analyze data. Instead, speak directly to the athlete with psychological awareness.\n"
-        "- If they're struggling: be warm, normalize their experience, suggest one concrete action\n"
-        "- If they're recovering: acknowledge progress, encourage patience\n"
-        "- If they're doing well: challenge them to maintain, note what to watch for\n"
-        'Use "you" language. Be human, not robotic. Keep it under 60 words.'
-    )
+        if not athlete or not checkin:
+            return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
 
-    try:
-        completion = client.chat.completions.create(
-            model='kimi-k2.6',
-            messages=[
-                {'role': 'system', 'content': _build_system_prompt()},
-                {'role': 'user', 'content': prompt},
-            ],
-            max_tokens=2000,
+        try:
+            client = _get_client()
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': str(e)}), 503
+
+        data_summary = _build_data_summary(data)
+        prompt = (
+            f"{data_summary}\n\n"
+            "## Your task:\n"
+            "Write a 2-3 sentence personalized insight as their AI coach.\n"
+            "DO NOT analyze data. Instead, speak directly to the athlete with psychological awareness.\n"
+            "- If they're struggling: be warm, normalize their experience, suggest one concrete action\n"
+            "- If they're recovering: acknowledge progress, encourage patience\n"
+            "- If they're doing well: challenge them to maintain, note what to watch for\n"
+            'Use "you" language. Be human, not robotic. Keep it under 60 words.'
         )
-        text = completion.choices[0].message.content.strip()
-        return jsonify({'success': True, 'text': text})
+
+        try:
+            completion = client.chat.completions.create(
+                model='kimi-k2.6',
+                messages=[
+                    {'role': 'system', 'content': _build_system_prompt()},
+                    {'role': 'user', 'content': prompt},
+                ],
+                max_tokens=2000,
+            )
+            text = completion.choices[0].message.content.strip()
+            return jsonify({'success': True, 'text': text})
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
     except Exception as e:
-        return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
 
 
 @ai_bp.route('/chat', methods=['POST'])
 def ai_chat():
-    data = request.get_json() or {}
-    athlete = data.get('athlete')
-    checkin = data.get('checkin')
-    messages = data.get('messages', [])
-
-    if not athlete or not checkin:
-        return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
-
     try:
-        client = _get_client()
-    except RuntimeError as e:
-        return jsonify({'success': False, 'message': str(e)}), 503
+        data = request.get_json() or {}
+        athlete = data.get('athlete')
+        checkin = data.get('checkin')
+        messages = data.get('messages') or []
 
-    data_summary = _build_data_summary(data)
+        if not athlete or not checkin:
+            return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
 
-    api_messages = [
-        {'role': 'system', 'content': _build_system_prompt()},
-        {'role': 'system', 'content': f'Athlete context:\n{data_summary}'},
-    ]
+        if not isinstance(messages, list):
+            return jsonify({'success': False, 'message': 'messages must be a list'}), 400
 
-    for m in messages:
-        role = m.get('role')
-        text = m.get('text') or m.get('content')
-        if role and text:
-            api_messages.append({'role': role, 'content': text})
+        try:
+            client = _get_client()
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': str(e)}), 503
 
-    try:
-        completion = client.chat.completions.create(
-            model='kimi-k2.6',
-            messages=api_messages,
-            max_tokens=4000,
-        )
-        text = completion.choices[0].message.content.strip()
-        return jsonify({'success': True, 'text': text})
+        data_summary = _build_data_summary(data)
+
+        api_messages = [
+            {'role': 'system', 'content': _build_system_prompt()},
+            {'role': 'system', 'content': f'Athlete context:\n{data_summary}'},
+        ]
+
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get('role')
+            text = m.get('text') or m.get('content')
+            if role and text:
+                api_messages.append({'role': role, 'content': text})
+
+        try:
+            completion = client.chat.completions.create(
+                model='kimi-k2.6',
+                messages=api_messages,
+                max_tokens=4000,
+            )
+            text = completion.choices[0].message.content.strip()
+            return jsonify({'success': True, 'text': text})
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
     except Exception as e:
-        return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
 
 
 @ai_bp.route('/low-period-support', methods=['POST'])
 def ai_low_period_support():
-    data = request.get_json() or {}
-    athlete = data.get('athlete')
-    checkin = data.get('checkin')
-
-    if not athlete or not checkin:
-        return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
-
     try:
-        client = _get_client()
-    except RuntimeError as e:
-        return jsonify({'success': False, 'message': str(e)}), 503
+        data = request.get_json() or {}
+        athlete = data.get('athlete')
+        checkin = data.get('checkin')
 
-    data_summary = _build_data_summary(data)
-    prompt = (
-        f"{data_summary}\n\n"
-        "## Your task:\n"
-        "The athlete is currently in a low period. Generate personalized 'Low Period Support' content with exactly 3 cards.\n\n"
-        "Card 1 — 'You're Not Alone':\n"
-        "- A statistic or reassuring fact relevant to their situation\n"
-        "- 1-2 warm, normalizing sentences\n\n"
-        "Card 2 — 'You've Come Back Before':\n"
-        "- A highlight number based on their data (e.g., recovery count, days)\n"
-        "- 1-2 sentences referencing their resilience and past recovery\n\n"
-        "Card 3 — 'What You Can Do Now':\n"
-        "- 3 actionable, specific bullet points tailored to their sport, data, and current state\n\n"
-        "Return ONLY a valid JSON object in this exact format (no markdown, no code fences):\n"
-        '{\n'
-        '  "cards": [\n'
-        '    {"title": "You\'re Not Alone", "highlight": "44%", "body": "string text"},\n'
-        '    {"title": "You\'ve Come Back Before", "highlight": "3 times", "body": "string text"},\n'
-        '    {"title": "What You Can Do Now", "highlight": null, "body": ["action 1", "action 2", "action 3"]}\n'
-        '  ]\n'
-        '}'
-    )
+        if not athlete or not checkin:
+            return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
 
-    try:
-        completion = client.chat.completions.create(
-            model='kimi-k2.6',
-            messages=[
-                {'role': 'system', 'content': _build_system_prompt()},
-                {'role': 'user', 'content': prompt},
-            ],
-            max_tokens=2000,
+        try:
+            client = _get_client()
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': str(e)}), 503
+
+        data_summary = _build_data_summary(data)
+        prompt = (
+            f"{data_summary}\n\n"
+            "## Your task:\n"
+            "The athlete is currently in a low period. Generate personalized 'Low Period Support' content with exactly 3 cards.\n\n"
+            "Card 1 — 'You're Not Alone':\n"
+            "- A statistic or reassuring fact relevant to their situation\n"
+            "- 1-2 warm, normalizing sentences\n\n"
+            "Card 2 — 'You've Come Back Before':\n"
+            "- A highlight number based on their data (e.g., recovery count, days)\n"
+            "- 1-2 sentences referencing their resilience and past recovery\n\n"
+            "Card 3 — 'What You Can Do Now':\n"
+            "- 3 actionable, specific bullet points tailored to their sport, data, and current state\n\n"
+            "Return ONLY a valid JSON object in this exact format (no markdown, no code fences):\n"
+            '{\n'
+            '  "cards": [\n'
+            '    {"title": "You\'re Not Alone", "highlight": "44%", "body": "string text"},\n'
+            '    {"title": "You\'ve Come Back Before", "highlight": "3 times", "body": "string text"},\n'
+            '    {"title": "What You Can Do Now", "highlight": null, "body": ["action 1", "action 2", "action 3"]}\n'
+            '  ]\n'
+            '}'
         )
-        raw = completion.choices[0].message.content.strip()
-        # Clean up markdown code fences if present
-        if raw.startswith('```'):
-            raw = raw.split('\n', 1)[1] if '\n' in raw else raw
-        if raw.endswith('```'):
-            raw = raw.rsplit('\n', 1)[0] if '\n' in raw else raw
-        if raw.startswith('json'):
-            raw = raw.split('\n', 1)[1] if '\n' in raw else raw
-        parsed = __import__('json').loads(raw)
-        return jsonify({'success': True, 'cards': parsed.get('cards', [])})
+
+        try:
+            completion = client.chat.completions.create(
+                model='kimi-k2.6',
+                messages=[
+                    {'role': 'system', 'content': _build_system_prompt()},
+                    {'role': 'user', 'content': prompt},
+                ],
+                max_tokens=2000,
+            )
+            raw = completion.choices[0].message.content.strip()
+            # Clean up markdown code fences if present
+            if raw.startswith('```'):
+                raw = raw.split('\n', 1)[1] if '\n' in raw else raw
+            if raw.endswith('```'):
+                raw = raw.rsplit('\n', 1)[0] if '\n' in raw else raw
+            if raw.startswith('json'):
+                raw = raw.split('\n', 1)[1] if '\n' in raw else raw
+            parsed = __import__('json').loads(raw)
+            return jsonify({'success': True, 'cards': parsed.get('cards', [])})
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
     except Exception as e:
-        return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500

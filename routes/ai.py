@@ -1,14 +1,82 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response, stream_with_context
 from openai import OpenAI
-import os, json, traceback
+import os, json, re, time, traceback, threading
 
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 
-# Moonshot (Kimi) client
+# Moonshot (Kimi) client — always live; no mock branch
+# Auth to Moonshot uses ONLY MOONSHOT_API_KEY below — never the client's Authorization header.
 _kimi_client = None
+MAX_CHAT_HISTORY = 40
+
+# Org concurrency limit is 3; keep a lower local cap and retry on 429.
+_MOONSHOT_MAX_CONCURRENCY = max(1, int(os.environ.get('MOONSHOT_MAX_CONCURRENCY', '2')))
+_moonshot_sem = threading.Semaphore(_MOONSHOT_MAX_CONCURRENCY)
+_MOONSHOT_MAX_RETRIES = max(1, int(os.environ.get('MOONSHOT_MAX_RETRIES', '5')))
+_MOONSHOT_SLOT_TIMEOUT = float(os.environ.get('MOONSHOT_SLOT_TIMEOUT', '90'))
+
+
+class _StreamGuard:
+    """Release the Moonshot concurrency slot when the stream finishes or errors."""
+
+    def __init__(self, stream, sem):
+        self._stream = stream
+        self._sem = sem
+        self._released = False
+
+    def __iter__(self):
+        try:
+            for chunk in self._stream:
+                yield chunk
+        finally:
+            self.release()
+
+    def release(self):
+        if not self._released:
+            self._released = True
+            self._sem.release()
+
+
+def _is_rate_limit_error(exc):
+    msg = str(exc).lower()
+    return (
+        '429' in msg
+        or 'rate_limit' in msg
+        or 'concurrency' in msg
+        or 'rate limit' in msg
+    )
+
+
+def _retry_after_seconds(exc, attempt):
+    match = re.search(r'try again after (\d+)', str(exc), re.I)
+    if match:
+        return float(match.group(1)) + 0.35
+    return min(1.0 * (2 ** attempt), 8.0)
+
+
+def _ai_error_response(exc):
+    """Map Moonshot errors to HTTP status + friendly message."""
+    if isinstance(exc, TimeoutError):
+        return jsonify({
+            'success': False,
+            'message': 'AI is busy right now. Please wait a moment and try again.',
+        }), 429
+    if _is_rate_limit_error(exc):
+        return jsonify({
+            'success': False,
+            'message': 'AI rate limit reached. Please wait a second and try again.',
+        }), 429
+    return jsonify({'success': False, 'message': f'AI error: {str(exc)}'}), 502
+
+
+@ai_bp.before_request
+def _ignore_client_authorization():
+    """AI routes do not use pivot JWT. Drop inbound Authorization so it cannot be mistaken for a Kimi key."""
+    request.environ.pop('HTTP_AUTHORIZATION', None)
 
 
 def _get_client():
+    """OpenAI-compatible client authenticated with server-side MOONSHOT_API_KEY only."""
     global _kimi_client
     if _kimi_client is None:
         api_key = os.environ.get('MOONSHOT_API_KEY')
@@ -17,9 +85,44 @@ def _get_client():
         _kimi_client = OpenAI(
             api_key=api_key,
             base_url='https://api.moonshot.cn/v1',
-            timeout=90.0,  # gunicorn timeout 120s, leave margin for 502/503 handlers
+            timeout=90.0,
         )
     return _kimi_client
+
+
+def _create_completion(**kwargs):
+    """
+    Call Moonshot with:
+    1) local semaphore so we don't exceed org concurrency (default 2 of 3)
+    2) retries on 429 concurrency / rate_limit errors
+    For stream=True, the semaphore is held until the stream is fully consumed.
+    """
+    client = _get_client()
+    stream = bool(kwargs.get('stream'))
+    last_err = None
+
+    for attempt in range(_MOONSHOT_MAX_RETRIES):
+        acquired = _moonshot_sem.acquire(timeout=_MOONSHOT_SLOT_TIMEOUT)
+        if not acquired:
+            raise TimeoutError('AI service is busy, please try again in a moment')
+
+        try:
+            result = client.chat.completions.create(**kwargs)
+            if stream:
+                return _StreamGuard(result, _moonshot_sem)
+            _moonshot_sem.release()
+            return result
+        except Exception as e:
+            _moonshot_sem.release()
+            last_err = e
+            if _is_rate_limit_error(e) and attempt < _MOONSHOT_MAX_RETRIES - 1:
+                wait = _retry_after_seconds(e, attempt)
+                print(f'[ai] Moonshot rate limit, retry {attempt + 1}/{_MOONSHOT_MAX_RETRIES} after {wait:.1f}s')
+                time.sleep(wait)
+                continue
+            raise
+
+    raise last_err
 
 
 def _build_system_prompt():
@@ -47,7 +150,6 @@ def _build_data_summary(data):
         if not isinstance(health, list) or len(health) == 0:
             return 'No health data available.'
 
-        # Filter out non-dict items
         valid_health = [h for h in health if isinstance(h, dict)]
         if len(valid_health) == 0:
             return 'No valid health data available.'
@@ -69,6 +171,27 @@ def _build_data_summary(data):
         return f'Data summary unavailable ({str(e)}).'
 
 
+def _normalize_chat_messages(messages):
+    """Convert client message list into OpenAI chat roles; keep recent history only."""
+    api_messages = []
+    if not isinstance(messages, list):
+        return api_messages
+
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get('role')
+        text = m.get('text') or m.get('content')
+        if role not in ('user', 'assistant', 'system') or not text:
+            continue
+        api_role = 'assistant' if role == 'assistant' else role
+        api_messages.append({'role': api_role, 'content': str(text)})
+
+    if len(api_messages) > MAX_CHAT_HISTORY:
+        api_messages = api_messages[-MAX_CHAT_HISTORY:]
+    return api_messages
+
+
 @ai_bp.route('/insight', methods=['POST'])
 def ai_insight():
     try:
@@ -80,7 +203,7 @@ def ai_insight():
             return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
 
         try:
-            client = _get_client()
+            _get_client()
         except Exception as e:
             traceback.print_exc()
             return jsonify({'success': False, 'message': str(e)}), 503
@@ -98,7 +221,7 @@ def ai_insight():
         )
 
         try:
-            completion = client.chat.completions.create(
+            completion = _create_completion(
                 model='kimi-k2.6',
                 messages=[
                     {'role': 'system', 'content': _build_system_prompt()},
@@ -106,11 +229,13 @@ def ai_insight():
                 ],
                 max_tokens=2000,
             )
-            text = completion.choices[0].message.content.strip()
+            text = (completion.choices[0].message.content or '').strip()
+            if not text:
+                return jsonify({'success': False, 'message': 'Empty AI response'}), 502
             return jsonify({'success': True, 'text': text})
         except Exception as e:
             traceback.print_exc()
-            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+            return _ai_error_response(e)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
@@ -118,6 +243,12 @@ def ai_insight():
 
 @ai_bp.route('/chat', methods=['POST'])
 def ai_chat():
+    """
+    Real Kimi conversation with SSE streaming (stream=True → Moonshot).
+    Emits text/event-stream chunks:
+      data: {"content":"..."}\n\n
+      data: [DONE]\n\n
+    """
     try:
         data = request.get_json() or {}
         athlete = data.get('athlete')
@@ -131,7 +262,7 @@ def ai_chat():
             return jsonify({'success': False, 'message': 'messages must be a list'}), 400
 
         try:
-            client = _get_client()
+            _get_client()
         except Exception as e:
             traceback.print_exc()
             return jsonify({'success': False, 'message': str(e)}), 503
@@ -142,26 +273,50 @@ def ai_chat():
             {'role': 'system', 'content': _build_system_prompt()},
             {'role': 'system', 'content': f'Athlete context:\n{data_summary}'},
         ]
+        api_messages.extend(_normalize_chat_messages(messages))
 
-        for m in messages:
-            if not isinstance(m, dict):
-                continue
-            role = m.get('role')
-            text = m.get('text') or m.get('content')
-            if role and text:
-                api_messages.append({'role': role, 'content': text})
+        if not any(m.get('role') == 'user' for m in api_messages):
+            return jsonify({'success': False, 'message': 'at least one user message required'}), 400
 
         try:
-            completion = client.chat.completions.create(
+            stream = _create_completion(
                 model='kimi-k2.6',
                 messages=api_messages,
                 max_tokens=4000,
+                stream=True,
             )
-            text = completion.choices[0].message.content.strip()
-            return jsonify({'success': True, 'text': text})
         except Exception as e:
             traceback.print_exc()
-            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+            return _ai_error_response(e)
+
+        def generate():
+            try:
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, 'content', None) or ''
+                    if content:
+                        yield f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                yield 'data: [DONE]\n\n'
+            except Exception as e:
+                traceback.print_exc()
+                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                yield 'data: [DONE]\n\n'
+            finally:
+                # Extra safety if iteration never started
+                if isinstance(stream, _StreamGuard):
+                    stream.release()
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache, no-transform',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+            },
+        )
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
@@ -178,7 +333,7 @@ def ai_low_period_support():
             return jsonify({'success': False, 'message': 'athlete and checkin required'}), 400
 
         try:
-            client = _get_client()
+            _get_client()
         except Exception as e:
             traceback.print_exc()
             return jsonify({'success': False, 'message': str(e)}), 503
@@ -207,7 +362,7 @@ def ai_low_period_support():
         )
 
         try:
-            completion = client.chat.completions.create(
+            completion = _create_completion(
                 model='kimi-k2.6',
                 messages=[
                     {'role': 'system', 'content': _build_system_prompt()},
@@ -215,19 +370,18 @@ def ai_low_period_support():
                 ],
                 max_tokens=2000,
             )
-            raw = completion.choices[0].message.content.strip()
-            # Clean up markdown code fences if present
+            raw = (completion.choices[0].message.content or '').strip()
             if raw.startswith('```'):
                 raw = raw.split('\n', 1)[1] if '\n' in raw else raw
             if raw.endswith('```'):
                 raw = raw.rsplit('\n', 1)[0] if '\n' in raw else raw
             if raw.startswith('json'):
                 raw = raw.split('\n', 1)[1] if '\n' in raw else raw
-            parsed = __import__('json').loads(raw)
+            parsed = json.loads(raw)
             return jsonify({'success': True, 'cards': parsed.get('cards', [])})
         except Exception as e:
             traceback.print_exc()
-            return jsonify({'success': False, 'message': f'AI error: {str(e)}'}), 502
+            return _ai_error_response(e)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500

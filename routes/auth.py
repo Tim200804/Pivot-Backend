@@ -118,13 +118,30 @@ def login():
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
     password = data.get('password', '')
+    requested_role = (data.get('role') or '').strip().lower()
 
     if not email or not password:
         return jsonify({'success': False, 'message': 'Email and password are required'}), 400
 
+    if requested_role not in ('athlete', 'coach'):
+        return jsonify({
+            'success': False,
+            'message': 'Role is required and must be athlete or coach',
+        }), 400
+
     user = get_user_by_email(email)
     if not user or not _check_password(password, user['password_hash']):
         return jsonify({'success': False, 'message': 'Invalid email or password'}), 401
+
+    # Portal isolation: credentials alone are not enough — login source must match account role
+    if user['role'] != requested_role:
+        return jsonify({
+            'success': False,
+            'message': (
+                f'This account is registered as a {user["role"]}. '
+                f'Please sign in from the {user["role"]} portal.'
+            ),
+        }), 403
 
     token = create_access_token(identity=str(user['id']))
     return jsonify({

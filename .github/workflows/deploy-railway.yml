@@ -24,5 +24,5 @@ jobs:
         run: |
           railway up --ci --service web
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ada8b074-f8ce-4f8f-8db3-279f127b0569
+          RAILWAY_TOKEN: ${{ secrets.PIVOT }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}

@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: railway-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -20,9 +24,17 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      # Required secret: RAILWAY_TOKEN
+      #   Railway Dashboard → Project → Settings → Tokens → Create Project Token
+      # Optional: RAILWAY_PROJECT_ID (project UUID)
       - name: Deploy to Railway
-        run: |
-          railway up --ci --service web
         env:
-          RAILWAY_TOKEN: ${{ secrets.PIVOT }}
-          RAILWAY_PROJECT_ID: f9a6af5b-fd9b-4210-8c63-dad7f8440be7
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN secret is missing."
+            echo "Create a Project Token in Railway (Project Settings → Tokens) and add it as RAILWAY_TOKEN."
+            exit 1
+          fi
+          railway up --ci --service web --detach

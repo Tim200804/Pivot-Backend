@@ -55,6 +55,8 @@ def init_db():
         )
     ''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id, created_at DESC)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id, created_at DESC)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(sender_id, recipient_id, created_at DESC)')
     conn.commit()
     conn.close()
 
@@ -107,6 +109,22 @@ def get_user_by_id(user_id: int) -> dict | None:
     row = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def list_coaches(exclude_id: int | None = None) -> list[dict]:
+    """Return all coach accounts (minimal public fields) for peer-notification UI."""
+    conn = get_db()
+    if exclude_id is not None:
+        rows = conn.execute(
+            "SELECT id, email, name, role, sport, coach_role FROM users WHERE role = 'coach' AND id != ? ORDER BY name, id",
+            (exclude_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, email, name, role, sport, coach_role FROM users WHERE role = 'coach' ORDER BY name, id"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def update_user_preferences(user_id: int, prefs: dict) -> dict | None:
@@ -203,6 +221,21 @@ def list_messages_from_user(user_id: int, limit: int = 50) -> list[dict]:
     rows = conn.execute(
         'SELECT * FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT ?',
         (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_conversation(user_id: int, other_user_id: int, limit: int = 200) -> list[dict]:
+    """All messages between two users, oldest first."""
+    conn = get_db()
+    rows = conn.execute(
+        '''SELECT * FROM messages
+           WHERE (sender_id = ? AND recipient_id = ?)
+              OR (sender_id = ? AND recipient_id = ?)
+           ORDER BY created_at ASC
+           LIMIT ?''',
+        (user_id, other_user_id, other_user_id, user_id, limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

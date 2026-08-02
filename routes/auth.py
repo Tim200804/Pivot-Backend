@@ -2,13 +2,16 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
-from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public
+from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
-# RFC 5322 simplified email regex
-EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+# Permissive email regex: any non-whitespace local part, an @, and a domain with a TLD >= 2 chars.
+EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$')
+
+# Password: at least 8 chars, alphanumeric only, and must contain at least one letter and one digit.
+PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$')
 
 
 def _hash_password(password: str) -> str:
@@ -77,8 +80,11 @@ def register():
     if not _is_valid_email(email):
         return jsonify({'success': False, 'message': 'Invalid email format'}), 400
 
-    if len(data['password']) < 6:
-        return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
+    if not PASSWORD_RE.match(data['password']):
+        return jsonify({
+            'success': False,
+            'message': 'Password must be at least 8 characters and contain both letters and digits',
+        }), 400
 
     if data['role'] not in ('athlete', 'coach'):
         return jsonify({'success': False, 'message': 'Role must be athlete or coach'}), 400
@@ -189,6 +195,32 @@ def list_athletes():
                 'position': r['position'],
             }
             for r in rows
+        ]
+    })
+
+
+@auth_bp.route('/coaches', methods=['GET'])
+@jwt_required()
+def list_coaches_route():
+    """Return a lightweight directory of coaches for peer notifications."""
+    user_id = int(get_jwt_identity())
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if user['role'] != 'coach':
+        return jsonify({'success': False, 'message': 'Only coaches can list coaches'}), 403
+    coaches = list_coaches(exclude_id=user_id)
+    return jsonify({
+        'success': True,
+        'coaches': [
+            {
+                'id': c['id'],
+                'name': c['name'],
+                'email': c['email'],
+                'sport': c['sport'],
+                'coachRole': c['coach_role'],
+            }
+            for c in coaches
         ]
     })
 

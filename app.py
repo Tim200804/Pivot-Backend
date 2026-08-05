@@ -11,6 +11,9 @@ from routes.auth import auth_bp
 from routes.ai import ai_bp
 from routes.schools import schools_bp
 from routes.messages import messages_bp
+from routes.checkins import checkins_bp
+from routes.health import health_bp
+from routes.alerts import alerts_bp
 
 
 def create_app():
@@ -29,6 +32,9 @@ def create_app():
     app.register_blueprint(ai_bp)
     app.register_blueprint(schools_bp)
     app.register_blueprint(messages_bp)
+    app.register_blueprint(checkins_bp)
+    app.register_blueprint(health_bp)
+    app.register_blueprint(alerts_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])

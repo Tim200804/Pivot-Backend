@@ -39,7 +39,20 @@ def create_app():
     # Health check
     @app.route('/api/health', methods=['GET'])
     def health():
-        return {'status': 'ok', 'service': 'pivot-backend'}
+        stats = {}
+        try:
+            from models import get_db
+            conn = get_db()
+            stats['users'] = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+            stats['health_metrics'] = conn.execute('SELECT COUNT(*) FROM health_metrics').fetchone()[0]
+            stats['training_metrics'] = conn.execute('SELECT COUNT(*) FROM training_metrics').fetchone()[0]
+            stats['alerts'] = conn.execute('SELECT COUNT(*) FROM alerts').fetchone()[0]
+            stats['checkins'] = conn.execute('SELECT COUNT(*) FROM checkins').fetchone()[0]
+            stats['messages'] = conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
+            conn.close()
+        except Exception as e:
+            stats['error'] = str(e)
+        return {'status': 'ok', 'service': 'pivot-backend', 'stats': stats}
 
     # Init DB on first request (lazy init)
     @app.before_request

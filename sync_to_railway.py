@@ -25,9 +25,10 @@ from urllib.parse import urlparse
 #  Railway MySQL 连接
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_railway_mysql_conn():
-    """Connect to Railway MySQL using DATABASE_URL env var."""
-    db_url = os.environ.get('DATABASE_URL')
+
+def get_railway_mysql_conn(url: str = None):
+    """Connect to Railway MySQL using DATABASE_URL env var or provided URL."""
+    db_url = url or os.environ.get('DATABASE_URL')
     if not db_url:
         print("❌ 错误: 环境变量 DATABASE_URL 未设置")
         print("请从 Railway Dashboard → MySQL → Connect 复制 DATABASE_URL")
@@ -63,9 +64,10 @@ def get_railway_mysql_conn():
 #  本地 SQLite 连接
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_sqlite_conn():
+
+def get_sqlite_conn(path: str = None):
     """Connect to local SQLite database."""
-    db_path = os.path.join(os.path.dirname(__file__), 'pivot.db')
+    db_path = path or os.path.join(os.path.dirname(__file__), 'pivot.db')
     if not os.path.exists(db_path):
         print(f"❌ 错误: 本地数据库文件不存在: {db_path}")
         sys.exit(1)
@@ -335,43 +337,66 @@ def migrate_table(sqlite_conn, mysql_conn, table):
     return inserted
 
 
+def sync_sqlite_to_mysql(sqlite_path: str = None, mysql_url: str = None, skip_clear: bool = False):
+    """Synchronize a SQLite database into Railway MySQL.
+
+    Args:
+        sqlite_path: Path to source SQLite file. Defaults to ./pivot.db.
+        mysql_url: MySQL connection URL. Defaults to DATABASE_URL env var.
+        skip_clear: If True, do not DELETE existing MySQL data before inserting.
+    """
+    sqlite_conn = get_sqlite_conn(sqlite_path)
+    mysql_conn = get_railway_mysql_conn(mysql_url)
+
+    try:
+        ensure_tables(mysql_conn)
+        if not skip_clear:
+            clear_mysql_tables(mysql_conn)
+
+        total = 0
+        for table in TABLE_ORDER:
+            total += migrate_table(sqlite_conn, mysql_conn, table)
+        return total
+    finally:
+        sqlite_conn.close()
+        mysql_conn.close()
+
+
+def seed_railway_from_bundled(bundled_db: str = 'railway_seed.db'):
+    """Seed Railway MySQL from a bundled SQLite file if the users table is empty."""
+    if not os.path.exists(bundled_db):
+        print(f"[seed] Bundled DB not found: {bundled_db}")
+        return 0
+
+    mysql_conn = get_railway_mysql_conn()
+    try:
+        cursor = mysql_conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM users")
+            count = cursor.fetchone()[0]
+        except Exception:
+            count = 0
+        cursor.close()
+
+        if count > 0:
+            print(f"[seed] Railway MySQL already has {count} users; skipping bundled seed")
+            return 0
+
+        print(f"[seed] Railway MySQL is empty; seeding from {bundled_db}")
+        total = sync_sqlite_to_mysql(bundled_db, skip_clear=True)
+        print(f"[seed] Seeded {total} rows from bundled SQLite")
+        return total
+    finally:
+        mysql_conn.close()
+
+
 def main():
     print("═" * 60)
     print("  Pivot SQLite → Railway MySQL 数据同步")
     print("═" * 60)
     print()
 
-    # 连接数据库
-    print("📡 连接 Railway MySQL...")
-    mysql_conn = get_railway_mysql_conn()
-    print("✅ Railway MySQL 连接成功")
-    print()
-
-    print("📂 连接本地 SQLite...")
-    sqlite_conn = get_sqlite_conn()
-    print("✅ 本地 SQLite 连接成功")
-    print()
-
-    # 确保表结构
-    print("🔧 检查并创建表结构...")
-    ensure_tables(mysql_conn)
-    print()
-
-    # 清空现有数据
-    print("🧹 清空 Railway MySQL 现有数据...")
-    clear_mysql_tables(mysql_conn)
-    print()
-
-    # 迁移数据
-    print("📤 开始迁移数据...")
-    total = 0
-    for table in TABLE_ORDER:
-        total += migrate_table(sqlite_conn, mysql_conn, table)
-    print()
-
-    # 关闭连接
-    sqlite_conn.close()
-    mysql_conn.close()
+    total = sync_sqlite_to_mysql()
 
     print("═" * 60)
     print(f"  ✅ 同步完成！共迁移 {total} 行数据")

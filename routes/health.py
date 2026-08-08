@@ -8,6 +8,7 @@ from models import (
     checkin_to_public, alert_to_public,
     get_latest_health_summary, get_team_summary,
     get_training_impact, get_training_health_correlation,
+    generate_training_adjustment_suggestion,
 )
 
 health_bp = Blueprint('health', __name__, url_prefix='/api/health')
@@ -204,3 +205,18 @@ def get_athlete_dashboard():
         'checkins': [checkin_to_public(r) for r in checkin_rows],
         'alerts': [alert_to_public(r, me) for r in alert_rows],
     })
+
+
+@health_bp.route('/training-suggestion/<int:user_id>', methods=['GET'])
+@jwt_required()
+def get_training_suggestion_route(user_id):
+    """Return an AI-style training adjustment suggestion based on recent load and recovery data."""
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if not _can_access_target(me, user_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    days = min(int(request.args.get('days', 14)), 90)
+    result = generate_training_adjustment_suggestion(user_id, days=days)
+    return jsonify({'success': True, 'suggestion': result})

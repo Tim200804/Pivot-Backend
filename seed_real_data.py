@@ -20,7 +20,7 @@ from models import (
     init_db, get_db, get_user_by_email, create_user, get_user_by_id,
     create_coach_athlete_link, create_checkin, create_health_metric,
     create_training_metric, create_alert_rule, evaluate_alerts_for_user,
-    list_alert_rules,
+    list_alert_rules, list_alerts_for_coach, create_intervention,
 )
 
 DB_PATH = os.environ.get('DATABASE_URL', 'sqlite:///pivot.db').replace('sqlite:///', '')
@@ -438,6 +438,105 @@ def _import_checkins(user_id, checkins):
         })
 
 
+def _create_sample_interventions():
+    """Create sample interventions for a subset of red/black alerts to demonstrate the closed loop."""
+    conn = get_db()
+    head_coach = conn.execute(
+        "SELECT id, coach_role FROM users WHERE role='coach' AND coach_role='Head Coach' ORDER BY id LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if not head_coach:
+        print('  No head coach found, skipping interventions')
+        return
+
+    coach_id = head_coach['id']
+    coach_role = head_coach['coach_role']
+
+    # Find the most recent red/black alerts across all linked athletes
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM alerts WHERE level IN ('red', 'black') AND status = 'active' ORDER BY triggered_at DESC, id DESC LIMIT 6"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        print('  No red/black alerts found, skipping interventions')
+        return
+
+    intervention_samples = [
+        {
+            'intervention_type': 'conversation',
+            'description': 'One-on-one check-in after practice to discuss stress load and sleep.',
+            'actions_taken': ['Met with athlete for 10 min', 'Reviewed sleep log', 'Set bedtime target'],
+            'status': 'completed',
+            'effectiveness_score': 4,
+            'outcome_notes': 'Athlete reported improved sleep after two nights; HRV recovered by 8% within 72 hours.',
+        },
+        {
+            'intervention_type': 'training_adjustment',
+            'description': 'Reduced next-day session from interval work to active recovery rowing.',
+            'actions_taken': ['Lowered intensity to UT2', 'Cut volume by 40%', 'Added technique drills'],
+            'status': 'completed',
+            'effectiveness_score': 5,
+            'outcome_notes': 'RHR returned to baseline; fatigue score dropped from 4 to 2.',
+        },
+        {
+            'intervention_type': 'rest_day',
+            'description': 'Prescribed full rest day with optional light mobility.',
+            'actions_taken': ['Cancelled water session', 'Provided mobility routine', 'Scheduled follow-up'],
+            'status': 'completed',
+            'effectiveness_score': 5,
+            'outcome_notes': 'Next-morning HRV rebounded 12%; athlete felt refreshed.',
+        },
+        {
+            'intervention_type': 'mental_skill',
+            'description': 'Brief breathing and pre-sleep relaxation exercise to lower arousal.',
+            'actions_taken': ['Taught box breathing', 'Shared 5-min meditation audio', 'Tracked mood'],
+            'status': 'in_progress',
+            'effectiveness_score': None,
+            'outcome_notes': 'Practicing daily; will reassess in 3 days.',
+        },
+        {
+            'intervention_type': 'sleep_hygiene',
+            'description': 'Sleep hygiene intervention: screen curfew, cool room, consistent bedtime.',
+            'actions_taken': ['Set 22:00 screen curfew', 'Adjusted room temp to 18C', 'Tracked sleep for 3 nights'],
+            'status': 'completed',
+            'effectiveness_score': 4,
+            'outcome_notes': 'Sleep duration increased from 5.2h to 6.8h; deep sleep improved.',
+        },
+        {
+            'intervention_type': 'nutrition',
+            'description': 'Reviewed hydration and fueling around hard sessions.',
+            'actions_taken': ['Increased pre-training carb intake', 'Added electrolyte protocol', 'Monitored urine color'],
+            'status': 'completed',
+            'effectiveness_score': 3,
+            'outcome_notes': 'Some improvement in recovery perception; continuing monitoring.',
+        },
+    ]
+
+    created = 0
+    for i, alert in enumerate(rows):
+        sample = intervention_samples[i % len(intervention_samples)]
+        started = (datetime.fromisoformat(alert['triggered_at']) + timedelta(hours=2)).isoformat()
+        completed = (datetime.fromisoformat(started) + timedelta(days=2)).isoformat() if sample['status'] == 'completed' else None
+        create_intervention({
+            'alert_id': alert['id'],
+            'athlete_id': alert['user_id'],
+            'coach_id': coach_id,
+            'coach_role': coach_role,
+            'intervention_type': sample['intervention_type'],
+            'description': sample['description'],
+            'actions_taken': sample['actions_taken'],
+            'status': sample['status'],
+            'started_at': started,
+            'completed_at': completed,
+            'effectiveness_score': sample['effectiveness_score'],
+            'outcome_notes': sample['outcome_notes'],
+        })
+        created += 1
+    print(f'  Created {created} sample interventions')
+
+
 def main():
     init_db()
     _drop_seed_tables()
@@ -455,6 +554,8 @@ def main():
         _import_checkins(user['id'], spec['checkins'])
         created = evaluate_alerts_for_user(user['id'])
         print(f"  {spec['name']}: imported {len(DAYS)} days, created {len(created)} alerts")
+
+    _create_sample_interventions()
 
     print('\nSeed complete.')
     conn = get_db()

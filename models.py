@@ -539,6 +539,54 @@ def init_db():
     _create_index_if_not_exists(conn, 'idx_alerts_user', 'alerts', 'user_id, triggered_at')
     _create_index_if_not_exists(conn, 'idx_alerts_status', 'alerts', 'status, triggered_at')
 
+    # ── interventions ──
+    if is_mysql:
+        conn.execute('''CREATE TABLE IF NOT EXISTS interventions (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            alert_id INT,
+            athlete_id INT NOT NULL,
+            coach_id INT NOT NULL,
+            coach_role VARCHAR(50),
+            intervention_type VARCHAR(50) NOT NULL,
+            description TEXT,
+            actions_taken TEXT,
+            status VARCHAR(50) NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'in_progress', 'completed', 'cancelled')),
+            started_at VARCHAR(30) NOT NULL,
+            completed_at VARCHAR(30),
+            effectiveness_score INT,
+            outcome_notes TEXT,
+            created_at VARCHAR(30) NOT NULL,
+            updated_at VARCHAR(30) NOT NULL,
+            FOREIGN KEY (alert_id) REFERENCES alerts(id),
+            FOREIGN KEY (athlete_id) REFERENCES users(id),
+            FOREIGN KEY (coach_id) REFERENCES users(id)
+        )''')
+    else:
+        conn.execute('''CREATE TABLE IF NOT EXISTS interventions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER,
+            athlete_id INTEGER NOT NULL,
+            coach_id INTEGER NOT NULL,
+            coach_role TEXT,
+            intervention_type TEXT NOT NULL,
+            description TEXT,
+            actions_taken TEXT,
+            status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'in_progress', 'completed', 'cancelled')),
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            effectiveness_score INTEGER,
+            outcome_notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (alert_id) REFERENCES alerts(id),
+            FOREIGN KEY (athlete_id) REFERENCES users(id),
+            FOREIGN KEY (coach_id) REFERENCES users(id)
+        )''')
+
+    _create_index_if_not_exists(conn, 'idx_interventions_alert', 'interventions', 'alert_id')
+    _create_index_if_not_exists(conn, 'idx_interventions_athlete', 'interventions', 'athlete_id')
+    _create_index_if_not_exists(conn, 'idx_interventions_coach', 'interventions', 'coach_id')
+
     conn.commit()
     conn.close()
 
@@ -1032,6 +1080,189 @@ def get_team_summary(coach_id: int) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Interventions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+INTERVENTION_TYPES = [
+    'conversation',
+    'training_adjustment',
+    'rest_day',
+    'mental_skill',
+    'nutrition',
+    'medical_referral',
+    'sleep_hygiene',
+    'other',
+]
+
+
+def create_intervention(data: dict) -> dict:
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO interventions
+            (alert_id, athlete_id, coach_id, coach_role, intervention_type, description,
+             actions_taken, status, started_at, completed_at, effectiveness_score,
+             outcome_notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data.get('alert_id'),
+        data['athlete_id'],
+        data['coach_id'],
+        data.get('coach_role'),
+        data['intervention_type'],
+        data.get('description', ''),
+        json.dumps(data.get('actions_taken', [])) if isinstance(data.get('actions_taken'), list) else (data.get('actions_taken') or ''),
+        data.get('status', 'planned'),
+        data.get('started_at', now),
+        data.get('completed_at'),
+        data.get('effectiveness_score'),
+        data.get('outcome_notes', ''),
+        now, now,
+    ))
+    intervention_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    # If linked to an alert and intervention is in_progress, update alert status
+    if data.get('alert_id') and data.get('status') == 'in_progress':
+        update_alert_status(data['alert_id'], 'active', user_id=data['coach_id'])
+
+    return get_intervention_by_id(intervention_id)
+
+
+def get_intervention_by_id(intervention_id: int) -> dict | None:
+    conn = get_db()
+    row = conn.execute('SELECT * FROM interventions WHERE id = ?', (intervention_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_interventions(athlete_id: int | None = None, alert_id: int | None = None,
+                       coach_id: int | None = None, status: str | None = None,
+                       limit: int = 100) -> list[dict]:
+    conn = get_db()
+    sql = 'SELECT * FROM interventions WHERE 1=1'
+    params = []
+    if athlete_id is not None:
+        sql += ' AND athlete_id = ?'
+        params.append(athlete_id)
+    if alert_id is not None:
+        sql += ' AND alert_id = ?'
+        params.append(alert_id)
+    if coach_id is not None:
+        sql += ' AND coach_id = ?'
+        params.append(coach_id)
+    if status is not None:
+        sql += ' AND status = ?'
+        params.append(status)
+    sql += ' ORDER BY started_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_intervention(intervention_id: int, data: dict) -> dict | None:
+    now = datetime.utcnow().isoformat()
+    intervention = get_intervention_by_id(intervention_id)
+    if not intervention:
+        return None
+
+    fields = []
+    values = []
+    if 'intervention_type' in data:
+        fields.append('intervention_type = ?')
+        values.append(data['intervention_type'])
+    if 'description' in data:
+        fields.append('description = ?')
+        values.append(data['description'])
+    if 'actions_taken' in data:
+        fields.append('actions_taken = ?')
+        actions = data['actions_taken']
+        if isinstance(actions, list):
+            actions = json.dumps(actions)
+        values.append(actions or '')
+    if 'status' in data:
+        fields.append('status = ?')
+        values.append(data['status'])
+    if 'completed_at' in data:
+        fields.append('completed_at = ?')
+        values.append(data['completed_at'])
+    if 'effectiveness_score' in data:
+        fields.append('effectiveness_score = ?')
+        values.append(data['effectiveness_score'])
+    if 'outcome_notes' in data:
+        fields.append('outcome_notes = ?')
+        values.append(data['outcome_notes'])
+    if not fields:
+        return intervention
+
+    fields.append('updated_at = ?')
+    values.append(now)
+    values.append(intervention_id)
+
+    conn = get_db()
+    conn.execute(f"UPDATE interventions SET {', '.join(fields)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+    updated = get_intervention_by_id(intervention_id)
+    # If status changed to completed and linked alert exists, mark alert resolved
+    if data.get('status') == 'completed' and updated and updated.get('alert_id'):
+        update_alert_status(updated['alert_id'], 'resolved', user_id=updated['coach_id'])
+    return updated
+
+
+def delete_intervention(intervention_id: int) -> bool:
+    conn = get_db()
+    conn.execute('DELETE FROM interventions WHERE id = ?', (intervention_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def intervention_to_public(i: dict, include_coach: bool = True, include_athlete: bool = True) -> dict:
+    actions = i.get('actions_taken', '')
+    if isinstance(actions, str) and actions.strip().startswith('['):
+        try:
+            actions = json.loads(actions)
+        except (json.JSONDecodeError, TypeError):
+            actions = actions.split('\n') if actions else []
+    elif isinstance(actions, str):
+        actions = actions.split('\n') if actions else []
+
+    result = {
+        'id': i['id'],
+        'alertId': i.get('alert_id'),
+        'athleteId': i['athlete_id'],
+        'coachId': i['coach_id'],
+        'coachRole': i.get('coach_role'),
+        'interventionType': i['intervention_type'],
+        'description': i.get('description'),
+        'actionsTaken': actions,
+        'status': i['status'],
+        'startedAt': i['started_at'],
+        'completedAt': i.get('completed_at'),
+        'effectivenessScore': i.get('effectiveness_score'),
+        'outcomeNotes': i.get('outcome_notes'),
+        'createdAt': i['created_at'],
+        'updatedAt': i['updated_at'],
+    }
+    if include_coach and i.get('coach_id'):
+        coach = get_user_by_id(i['coach_id'])
+        if coach:
+            result['coachName'] = coach.get('name')
+            result['coachEmail'] = coach.get('email')
+    if include_athlete and i.get('athlete_id'):
+        athlete = get_user_by_id(i['athlete_id'])
+        if athlete:
+            result['athleteName'] = athlete.get('name')
+            result['athleteEmail'] = athlete.get('email')
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Training Metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1183,6 +1414,134 @@ def get_training_health_correlation(user_id: int, days: int = 28) -> dict:
             'loadVsRhr': _corr([p['load'] for p in pairs], [p['rhr'] for p in pairs]),
             'loadVsSleep': _corr([p['load'] for p in pairs], [p['sleepHours'] for p in pairs]),
         },
+    }
+
+
+def generate_training_adjustment_suggestion(user_id: int, days: int = 14) -> dict:
+    """Generate an evidence-based training adjustment suggestion from recent load and recovery data.
+
+    This function combines rule-based sports-science heuristics with correlation insights.
+    It returns a structured recommendation that can be rendered directly in the UI or fed to an LLM.
+    """
+    training_rows = list_training_metrics(user_id, limit=days + 7)
+    health_rows = list_health_metrics(user_id, limit=days + 7)
+    latest_summary = get_latest_health_summary(user_id)
+
+    if not training_rows or not health_rows:
+        return {
+            'hasEnoughData': False,
+            'suggestion': 'Not enough recent data to generate a training suggestion.',
+            'rationale': 'Keep logging training and health metrics for at least 3 days.',
+            'actions': ['Log today\'s training session', 'Complete the evening check-in', 'Wear recovery device tonight'],
+            'riskLevel': 'unknown',
+        }
+
+    # Sort chronologically for trend analysis
+    training_rows = sorted(training_rows, key=lambda r: r['date'])
+    health_rows = sorted(health_rows, key=lambda r: r['date'])
+
+    # Recent load trend (last 3 sessions vs prior 3)
+    recent_training = training_rows[-3:]
+    prior_training = training_rows[-6:-3] if len(training_rows) >= 6 else training_rows[:3]
+
+    def avg_load(rows):
+        loads = [(r.get('intensity_score') or 5) * (r.get('volume_score') or 5) for r in rows]
+        return round(sum(loads) / len(loads), 1) if loads else 0
+
+    recent_load = avg_load(recent_training)
+    prior_load = avg_load(prior_training)
+    load_delta_pct = round((recent_load - prior_load) / prior_load * 100, 1) if prior_load else 0
+
+    # Recovery trend (last 3 health records vs prior 3)
+    recent_health = health_rows[-3:]
+    prior_health = health_rows[-6:-3] if len(health_rows) >= 6 else health_rows[:3]
+
+    avg_hrv_recent = round(sum(h.get('hrv') or 0 for h in recent_health) / len(recent_health), 1)
+    avg_hrv_prior = round(sum(h.get('hrv') or 0 for h in prior_health) / len(prior_health), 1)
+    hrv_delta = round(avg_hrv_recent - avg_hrv_prior, 1)
+    hrv_delta_pct = round(hrv_delta / avg_hrv_prior * 100, 1) if avg_hrv_prior else 0
+
+    avg_rhr_recent = round(sum(h.get('rhr') or 0 for h in recent_health) / len(recent_health), 1)
+    avg_rhr_prior = round(sum(h.get('rhr') or 0 for h in prior_health) / len(prior_health), 1)
+    rhr_delta = round(avg_rhr_recent - avg_rhr_prior, 1)
+
+    sleep_recent = round(sum(h.get('sleep_hours') or 0 for h in recent_health) / len(recent_health), 1)
+    sleep_prior = round(sum(h.get('sleep_hours') or 0 for h in prior_health) / len(prior_health), 1)
+
+    # Correlation insights
+    correlation = get_training_health_correlation(user_id, days=days)
+    corr_hrv = correlation.get('correlations', {}).get('loadVsHrv')
+    corr_rhr = correlation.get('correlations', {}).get('loadVsRhr')
+
+    # Build rationale and recommendation
+    risk_level = 'low'
+    reasons = []
+    actions = []
+
+    if recent_load >= 49 and hrv_delta_pct <= -5:
+        risk_level = 'high'
+        reasons.append(f'High recent load (load score {recent_load}) is paired with a {abs(hrv_delta_pct)}% HRV drop.')
+        actions.append('Reduce intensity by 20-30% for the next 1-2 sessions.')
+        actions.append('Replace one hard session with active recovery or technique work.')
+        actions.append('Prioritize 8+ hours of sleep and hydration monitoring.')
+    elif recent_load >= 40 and rhr_delta >= 4:
+        risk_level = 'high'
+        reasons.append(f'Resting heart rate is up {rhr_delta} bpm while training load is elevated (score {recent_load}).')
+        actions.append('Add a full rest day within the next 48 hours.')
+        actions.append('Shorten tomorrow\'s session by 20% and keep it in UT2.')
+        actions.append('Review nutrition and hydration around training.')
+    elif load_delta_pct >= 30 and hrv_delta_pct <= -3:
+        risk_level = 'moderate'
+        reasons.append(f'Load increased {load_delta_pct}% recently and HRV is starting to decline.')
+        actions.append('Hold volume steady; do not add more load this week.')
+        actions.append('Increase recovery modalities (stretching, massage, cool-down).')
+    elif hrv_delta_pct >= 5 and recent_load < 30:
+        risk_level = 'low'
+        reasons.append('HRV is improving and recent load is low; recovery capacity looks good.')
+        actions.append('You can gradually add one quality session (intervals or tempo) this week.')
+        actions.append('Keep sleep and nutrition consistent to protect the rebound.')
+    elif sleep_recent < 6 and recent_load >= 30:
+        risk_level = 'moderate'
+        reasons.append(f'Sleep average dropped to {sleep_recent}h while load remains significant.')
+        actions.append('Move hard sessions earlier in the day; avoid late screens.')
+        actions.append('Use a 20-minute nap or relaxation breathing before bed.')
+    else:
+        risk_level = 'low'
+        reasons.append('Recent load and recovery signals are in balance.')
+        actions.append('Continue current training plan with normal weekly progression.')
+        actions.append('Monitor HRV and sleep over the next 3 days.')
+
+    # Add correlation-based nuance
+    if corr_hrv is not None and corr_hrv < -0.3:
+        reasons.append(f'Training load shows a {abs(corr_hrv)} negative correlation with HRV, confirming high load suppresses recovery.')
+    if corr_rhr is not None and corr_rhr > 0.3:
+        reasons.append(f'Training load shows a {corr_rhr} positive correlation with RHR, suggesting incomplete recovery after hard days.')
+
+    suggestion_text = (
+        f"{ 'Reduce load immediately' if risk_level == 'high' else ('Proceed with caution' if risk_level == 'moderate' else 'Maintain or progress carefully') } — "
+        f"recent load is {recent_load} (up {load_delta_pct}% vs prior block), HRV moved {hrv_delta_pct}%, and sleep averaged {sleep_recent}h. "
+        + reasons[0]
+    )
+
+    return {
+        'hasEnoughData': True,
+        'suggestion': suggestion_text,
+        'rationale': reasons,
+        'actions': actions,
+        'riskLevel': risk_level,
+        'metrics': {
+            'recentLoad': recent_load,
+            'priorLoad': prior_load,
+            'loadDeltaPct': load_delta_pct,
+            'avgHrvRecent': avg_hrv_recent,
+            'avgHrvPrior': avg_hrv_prior,
+            'hrvDeltaPct': hrv_delta_pct,
+            'rhrDelta': rhr_delta,
+            'sleepRecent': sleep_recent,
+            'sleepPrior': sleep_prior,
+            'correlation': correlation.get('correlations'),
+        },
+        'latestSummary': latest_summary,
     }
 
 

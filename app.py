@@ -39,6 +39,7 @@ def create_app():
     # Health check
     @app.route('/api/health', methods=['GET'])
     def health():
+        import os
         stats = {}
         try:
             from models import get_db
@@ -52,6 +53,15 @@ def create_app():
             conn.close()
         except Exception as e:
             stats['error'] = str(e)
+
+        db_url = os.environ.get('DATABASE_URL', '')
+        seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'railway_seed.db')
+        stats['debug'] = {
+            'cwd': os.getcwd(),
+            'db_url_prefix': db_url[:20] + '...' if db_url else None,
+            'seed_path': seed_path,
+            'seed_exists': os.path.exists(seed_path),
+        }
         return {'status': 'ok', 'service': 'pivot-backend', 'stats': stats}
 
     # Init DB on first request (lazy init)

@@ -18,12 +18,21 @@ except Exception as e:
 # When running on Railway (MySQL) with a bundled SQLite seed file, auto-seed
 # the database if it is empty. This avoids manual SQL copy-paste in the
 # Railway Console and its 32KB paste limit.
-if os.environ.get('DATABASE_URL', '').startswith('mysql') and os.path.exists('railway_seed.db'):
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SEED_DB_PATH = os.path.join(BASE_DIR, 'railway_seed.db')
+db_url = os.environ.get('DATABASE_URL', '')
+print(f"[startup] DATABASE_URL starts with mysql: {db_url.startswith('mysql')}")
+print(f"[startup] Seed DB exists at {SEED_DB_PATH}: {os.path.exists(SEED_DB_PATH)}")
+
+if db_url.startswith('mysql') and os.path.exists(SEED_DB_PATH):
     try:
         from sync_to_railway import seed_railway_from_bundled
-        seed_railway_from_bundled('railway_seed.db')
+        seeded = seed_railway_from_bundled(SEED_DB_PATH)
+        print(f"[startup] Bundled seed finished: {seeded} rows")
     except Exception as e:
+        import traceback
         print(f"[startup] Bundled seed failed: {e}")
+        traceback.print_exc()
 
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_ENV') != 'production'

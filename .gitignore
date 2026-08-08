@@ -14,3 +14,4 @@ venv/
 .env.local
 .env.production
 .DS_Store
+seed_tim_yang.py

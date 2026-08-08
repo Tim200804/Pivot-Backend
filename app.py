@@ -4,7 +4,11 @@ from flask import Flask
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
-load_dotenv()
+# Only load .env file in local development. On Railway we rely on injected
+# environment variables (DATABASE_URL / MYSQL_URL); loading a local .env here
+# would overwrite them with development defaults.
+if not os.environ.get('RAILWAY_ENVIRONMENT') and os.environ.get('FLASK_ENV', 'development') == 'development':
+    load_dotenv()
 
 from models import init_db
 from routes.auth import auth_bp

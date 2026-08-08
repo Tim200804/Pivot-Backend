@@ -7,7 +7,10 @@ from flask_jwt_extended import JWTManager
 # Only load .env file in local development. On Railway we rely on injected
 # environment variables (DATABASE_URL / MYSQL_URL); loading a local .env here
 # would overwrite them with development defaults.
-if not os.environ.get('RAILWAY_ENVIRONMENT') and os.environ.get('FLASK_ENV', 'development') == 'development':
+def _is_local_development() -> bool:
+    return not any(k.startswith('RAILWAY_') for k in os.environ) and os.environ.get('FLASK_ENV', 'development') == 'development'
+
+if _is_local_development():
     load_dotenv()
 
 from models import init_db

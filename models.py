@@ -8,14 +8,32 @@ from urllib.parse import urlparse
 #  Database URL parsing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DATABASE_URL = (
-    os.environ.get('DATABASE_URL')
-    or os.environ.get('MYSQL_URL')
-    or os.environ.get('MYSQL_PUBLIC_URL')
-    or os.environ.get('MYSQL_PRIVATE_URL')
-    or os.environ.get('MYSQLDATABASE')
-    or 'sqlite:///pivot.db'
-)
+def _resolve_database_url() -> str:
+    """Resolve DB URL from Railway-injected env vars or local defaults."""
+    url = (
+        os.environ.get('DATABASE_URL')
+        or os.environ.get('MYSQL_URL')
+        or os.environ.get('MYSQL_PUBLIC_URL')
+        or os.environ.get('MYSQL_PRIVATE_URL')
+    )
+    if url:
+        return url
+
+    # Railway MySQL plugin also injects individual connection variables.
+    # If the service is linked to MySQL but no URL variable is present, build
+    # the URL from these pieces.
+    host = os.environ.get('MYSQLHOST')
+    if host:
+        user = os.environ.get('MYSQLUSER', 'root')
+        password = os.environ.get('MYSQLPASSWORD', '')
+        port = os.environ.get('MYSQLPORT', '3306')
+        database = os.environ.get('MYSQLDATABASE', 'railway')
+        return f"mysql://{user}:{password}@{host}:{port}/{database}"
+
+    return 'sqlite:///pivot.db'
+
+
+DATABASE_URL = _resolve_database_url()
 
 
 def _is_mysql() -> bool:

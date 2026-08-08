@@ -54,13 +54,20 @@ def create_app():
         except Exception as e:
             stats['error'] = str(e)
 
-        db_url = os.environ.get('DATABASE_URL', '')
+        from models import DATABASE_URL as ACTIVE_DATABASE_URL
         seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'railway_seed.db')
+        env_keys = {
+            k: ('set' if v else 'empty')
+            for k, v in os.environ.items()
+            if any(x in k.upper() for x in ['DATABASE', 'MYSQL', 'RAILWAY', 'SQL'])
+        }
         stats['debug'] = {
             'cwd': os.getcwd(),
-            'db_url_prefix': db_url[:20] + '...' if db_url else None,
+            'active_db_url_prefix': ACTIVE_DATABASE_URL.split('://')[0] if ACTIVE_DATABASE_URL else None,
+            'active_db_url_host': ACTIVE_DATABASE_URL.split('@')[-1].split('/')[0].split(':')[0] if ACTIVE_DATABASE_URL and '@' in ACTIVE_DATABASE_URL else None,
             'seed_path': seed_path,
             'seed_exists': os.path.exists(seed_path),
+            'env_keys': env_keys,
         }
         return {'status': 'ok', 'service': 'pivot-backend', 'stats': stats}
 

@@ -118,6 +118,14 @@ CREATE_TABLES = [
         max_hr REAL,
         avg_hr REAL,
         duration_minutes REAL,
+        training_type VARCHAR(50),
+        training_phase VARCHAR(50),
+        intensity_score INT,
+        volume_score INT,
+        focus_area VARCHAR(100),
+        coach_notes TEXT,
+        planned_load INT,
+        actual_load INT,
         created_at VARCHAR(30) NOT NULL,
         UNIQUE(user_id, date)
     )

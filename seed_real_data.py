@@ -258,6 +258,67 @@ ATHLETE_SPECS = [
     },
 ]
 
+# Training context metadata for each athlete per day.
+# Keys mirror DAYS order.  This gives coaches realistic context when exploring
+# the "training load vs recovery" overlay.
+TRAINING_CONTEXT = {
+    'Alex Chen': [
+        {'trainingType': 'long_distance', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 7, 'focusArea': 'endurance', 'coachNotes': 'Steady state 16km, good technique'},
+        {'trainingType': 'interval', 'trainingPhase': 'build', 'intensityScore': 8, 'volumeScore': 6, 'focusArea': 'power', 'coachNotes': '6x500m @ race pace'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'build', 'intensityScore': 5, 'volumeScore': 7, 'focusArea': 'technique', 'coachNotes': 'Easy aerobic row, focus on ratio'},
+        {'trainingType': 'power', 'trainingPhase': 'build', 'intensityScore': 8, 'volumeScore': 5, 'focusArea': 'power', 'coachNotes': 'Weight room + short pieces'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 7, 'focusArea': 'endurance', 'coachNotes': '45 min UT2'},
+        {'trainingType': 'recovery', 'trainingPhase': 'build', 'intensityScore': 2, 'volumeScore': 2, 'focusArea': 'recovery', 'coachNotes': 'Active recovery row + mobility'},
+        {'trainingType': 'long_distance', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 8, 'focusArea': 'endurance', 'coachNotes': '18km steady state'},
+    ],
+    'Jordan Lee': [
+        {'trainingType': 'interval', 'trainingPhase': 'build', 'intensityScore': 8, 'volumeScore': 6, 'focusArea': 'power', 'coachNotes': '5x1000m, pushed hard'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 6, 'focusArea': 'endurance', 'coachNotes': 'Sleep reported poor'},
+        {'trainingType': 'interval', 'trainingPhase': 'build', 'intensityScore': 8, 'volumeScore': 7, 'focusArea': 'power', 'coachNotes': '8x500m, HR high'},
+        {'trainingType': 'long_distance', 'trainingPhase': 'build', 'intensityScore': 7, 'volumeScore': 7, 'focusArea': 'endurance', 'coachNotes': 'Struggled to hold split'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 6, 'focusArea': 'technique', 'coachNotes': 'Mentally fatigued'},
+        {'trainingType': 'recovery', 'trainingPhase': 'build', 'intensityScore': 3, 'volumeScore': 3, 'focusArea': 'recovery', 'coachNotes': 'Light row, still tired'},
+        {'trainingType': 'rest', 'trainingPhase': 'build', 'intensityScore': 1, 'volumeScore': 1, 'focusArea': 'recovery', 'coachNotes': 'Full rest day recommended'},
+    ],
+    'Morgan Smith': [
+        {'trainingType': 'power', 'trainingPhase': 'peak', 'intensityScore': 9, 'volumeScore': 8, 'focusArea': 'power', 'coachNotes': 'Max power test, very high CNS load'},
+        {'trainingType': 'interval', 'trainingPhase': 'peak', 'intensityScore': 9, 'volumeScore': 7, 'focusArea': 'power', 'coachNotes': '4x2k @ 2k pace'},
+        {'trainingType': 'race', 'trainingPhase': 'peak', 'intensityScore': 10, 'volumeScore': 8, 'focusArea': 'race', 'coachNotes': 'Time trial, all out'},
+        {'trainingType': 'interval', 'trainingPhase': 'peak', 'intensityScore': 8, 'volumeScore': 6, 'focusArea': 'power', 'coachNotes': 'Cut volume but still intense'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'taper', 'intensityScore': 5, 'volumeScore': 4, 'focusArea': 'recovery', 'coachNotes': 'Forced reduction, HRV crashed'},
+        {'trainingType': 'recovery', 'trainingPhase': 'taper', 'intensityScore': 2, 'volumeScore': 2, 'focusArea': 'recovery', 'coachNotes': 'Easy paddle only'},
+        {'trainingType': 'rest', 'trainingPhase': 'taper', 'intensityScore': 1, 'volumeScore': 1, 'focusArea': 'recovery', 'coachNotes': 'Complete rest, monitor morning HRV'},
+    ],
+    'Casey Park': [
+        {'trainingType': 'race', 'trainingPhase': 'peak', 'intensityScore': 10, 'volumeScore': 9, 'focusArea': 'race', 'coachNotes': 'Back-to-back racing'},
+        {'trainingType': 'power', 'trainingPhase': 'peak', 'intensityScore': 9, 'volumeScore': 8, 'focusArea': 'power', 'coachNotes': 'Heavy lifting + rowing'},
+        {'trainingType': 'race', 'trainingPhase': 'peak', 'intensityScore': 10, 'volumeScore': 9, 'focusArea': 'race', 'coachNotes': 'Another race effort'},
+        {'trainingType': 'interval', 'trainingPhase': 'peak', 'intensityScore': 9, 'volumeScore': 7, 'focusArea': 'power', 'coachNotes': 'Volume reduced but still red-lining'},
+        {'trainingType': 'power', 'trainingPhase': 'taper', 'intensityScore': 7, 'volumeScore': 5, 'focusArea': 'recovery', 'coachNotes': 'Taper started too late'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'taper', 'intensityScore': 4, 'volumeScore': 4, 'focusArea': 'recovery', 'coachNotes': 'Very low energy'},
+        {'trainingType': 'rest', 'trainingPhase': 'taper', 'intensityScore': 1, 'volumeScore': 1, 'focusArea': 'recovery', 'coachNotes': 'Medical check recommended'},
+    ],
+    'Riley Kim': [
+        {'trainingType': 'long_distance', 'trainingPhase': 'peak', 'intensityScore': 6, 'volumeScore': 8, 'focusArea': 'endurance', 'coachNotes': '20km steady state'},
+        {'trainingType': 'interval', 'trainingPhase': 'peak', 'intensityScore': 8, 'volumeScore': 7, 'focusArea': 'power', 'coachNotes': '6x1k strong'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'peak', 'intensityScore': 5, 'volumeScore': 7, 'focusArea': 'technique', 'coachNotes': 'Easy row, good numbers'},
+        {'trainingType': 'power', 'trainingPhase': 'peak', 'intensityScore': 8, 'volumeScore': 6, 'focusArea': 'power', 'coachNotes': 'Weights + 4x500m'},
+        {'trainingType': 'interval', 'trainingPhase': 'peak', 'intensityScore': 8, 'volumeScore': 7, 'focusArea': 'power', 'coachNotes': '3x2k, recovered well'},
+        {'trainingType': 'recovery', 'trainingPhase': 'peak', 'intensityScore': 2, 'volumeScore': 2, 'focusArea': 'recovery', 'coachNotes': 'Active recovery, sleep great'},
+        {'trainingType': 'long_distance', 'trainingPhase': 'peak', 'intensityScore': 6, 'volumeScore': 8, 'focusArea': 'endurance', 'coachNotes': 'Long steady row'},
+    ],
+    'Taylor Brooks': [
+        {'trainingType': 'recovery', 'trainingPhase': 'base', 'intensityScore': 2, 'volumeScore': 2, 'focusArea': 'recovery', 'coachNotes': 'Return to training, very light'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'base', 'intensityScore': 4, 'volumeScore': 4, 'focusArea': 'technique', 'coachNotes': 'Easy 30 min, focus form'},
+        {'trainingType': 'recovery', 'trainingPhase': 'base', 'intensityScore': 3, 'volumeScore': 3, 'focusArea': 'recovery', 'coachNotes': 'Light paddle'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'base', 'intensityScore': 5, 'volumeScore': 5, 'focusArea': 'endurance', 'coachNotes': '40 min UT2'},
+        {'trainingType': 'interval', 'trainingPhase': 'build', 'intensityScore': 6, 'volumeScore': 5, 'focusArea': 'power', 'coachNotes': '4x1k moderate'},
+        {'trainingType': 'steady_state', 'trainingPhase': 'build', 'intensityScore': 5, 'volumeScore': 6, 'focusArea': 'endurance', 'coachNotes': 'Building volume back'},
+        {'trainingType': 'long_distance', 'trainingPhase': 'build', 'intensityScore': 5, 'volumeScore': 7, 'focusArea': 'endurance', 'coachNotes': '12km steady state'},
+    ],
+}
+
+
 ALERT_RULES = [
     {
         'name': 'Recovery Deficiency',
@@ -327,7 +388,8 @@ def _link_to_head_coach(athlete_id):
         print(f"  Linked athlete {athlete_id} to head coach {coach_id}")
 
 
-def _import_metrics(user_id, health, training):
+def _import_metrics(user_id, name, health, training):
+    context = TRAINING_CONTEXT.get(name, [])
     for i, date in enumerate(DAYS):
         h = health[i]
         create_health_metric(user_id, {
@@ -343,6 +405,7 @@ def _import_metrics(user_id, health, training):
             'source': 'manual',
         })
         t = training[i]
+        ctx = context[i] if i < len(context) else {}
         create_training_metric(user_id, {
             'date': date,
             'distance': t['distance'],
@@ -351,6 +414,14 @@ def _import_metrics(user_id, health, training):
             'maxHR': t['maxHR'],
             'avgHR': t['avgHR'],
             'duration': t['duration'],
+            'trainingType': ctx.get('trainingType'),
+            'trainingPhase': ctx.get('trainingPhase'),
+            'intensityScore': ctx.get('intensityScore'),
+            'volumeScore': ctx.get('volumeScore'),
+            'focusArea': ctx.get('focusArea'),
+            'coachNotes': ctx.get('coachNotes'),
+            'plannedLoad': ctx.get('intensityScore', 5) * ctx.get('volumeScore', 5),
+            'actualLoad': ctx.get('intensityScore', 5) * ctx.get('volumeScore', 5),
         })
 
 
@@ -380,7 +451,7 @@ def main():
     for spec in ATHLETE_SPECS:
         user = _get_or_create_athlete(spec)
         _link_to_head_coach(user['id'])
-        _import_metrics(user['id'], spec['health'], spec['training'])
+        _import_metrics(user['id'], spec['name'], spec['health'], spec['training'])
         _import_checkins(user['id'], spec['checkins'])
         created = evaluate_alerts_for_user(user['id'])
         print(f"  {spec['name']}: imported {len(DAYS)} days, created {len(created)} alerts")

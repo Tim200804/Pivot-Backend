@@ -7,6 +7,7 @@ from models import (
     health_metric_to_public, training_metric_to_public,
     checkin_to_public, alert_to_public,
     get_latest_health_summary, get_team_summary,
+    get_training_impact, get_training_health_correlation,
 )
 
 health_bp = Blueprint('health', __name__, url_prefix='/api/health')
@@ -125,6 +126,41 @@ def get_team_summary_route():
         'success': True,
         'summary': get_team_summary(me['id']),
     })
+
+
+@health_bp.route('/training-impact/<int:user_id>', methods=['GET'])
+@jwt_required()
+def get_training_impact_route(user_id):
+    """Return health metric changes 1-3 days after a specific training session."""
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if not _can_access_target(me, user_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    date = request.args.get('date')
+    if not date:
+        return jsonify({'success': False, 'message': 'date query param required'}), 400
+
+    result = get_training_impact(user_id, date)
+    if 'error' in result:
+        return jsonify({'success': False, 'message': result['error']}), 404
+    return jsonify({'success': True, 'impact': result})
+
+
+@health_bp.route('/correlation/<int:user_id>', methods=['GET'])
+@jwt_required()
+def get_correlation_route(user_id):
+    """Return correlation between training load and next-day health metrics."""
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if not _can_access_target(me, user_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    days = min(int(request.args.get('days', 28)), 365)
+    result = get_training_health_correlation(user_id, days=days)
+    return jsonify({'success': True, 'correlation': result})
 
 
 @health_bp.route('/dashboard', methods=['GET'])

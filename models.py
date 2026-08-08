@@ -1,6 +1,7 @@
 import os
 import json
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -442,6 +443,14 @@ def init_db():
             max_hr REAL,
             avg_hr REAL,
             duration_minutes REAL,
+            training_type VARCHAR(50),
+            training_phase VARCHAR(50),
+            intensity_score INT,
+            volume_score INT,
+            focus_area VARCHAR(100),
+            coach_notes TEXT,
+            planned_load INT,
+            actual_load INT,
             created_at VARCHAR(30) NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id),
             UNIQUE(user_id, date)
@@ -457,10 +466,32 @@ def init_db():
             max_hr REAL,
             avg_hr REAL,
             duration_minutes REAL,
+            training_type TEXT,
+            training_phase TEXT,
+            intensity_score INTEGER,
+            volume_score INTEGER,
+            focus_area TEXT,
+            coach_notes TEXT,
+            planned_load INTEGER,
+            actual_load INTEGER,
             created_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id),
             UNIQUE(user_id, date)
         )''')
+
+    # Migration: add new training columns if they don't exist (existing deployments)
+    for col, col_type in [
+        ('training_type', 'TEXT'),
+        ('training_phase', 'TEXT'),
+        ('intensity_score', 'INTEGER'),
+        ('volume_score', 'INTEGER'),
+        ('focus_area', 'TEXT'),
+        ('coach_notes', 'TEXT'),
+        ('planned_load', 'INTEGER'),
+        ('actual_load', 'INTEGER'),
+    ]:
+        if not _table_has_column(conn, 'training_metrics', col):
+            conn.execute(f'ALTER TABLE training_metrics ADD COLUMN {col} {col_type}')
 
     _create_index_if_not_exists(conn, 'idx_training_user_date', 'training_metrics', 'user_id, date')
 
@@ -948,8 +979,28 @@ def get_team_summary(coach_id: int) -> dict:
 
     summaries = []
     for athlete in athletes:
-        summary = get_latest_health_summary(athlete['id'])
-        summaries.append({**athlete, **summary})
+        user_id = athlete['id']
+        summary = get_latest_health_summary(user_id)
+        # Aggregate recent training load (last 7 days)
+        recent_training = list_training_metrics(user_id, limit=7)
+        loads = []
+        latest_type = None
+        latest_date = None
+        for t in recent_training:
+            load = t.get('planned_load') or t.get('actual_load') or (t.get('intensity_score') or 5) * (t.get('volume_score') or 5)
+            loads.append(load)
+            if latest_date is None or t['date'] > latest_date:
+                latest_date = t['date']
+                latest_type = t.get('training_type')
+        avg_load = round(sum(loads) / len(loads), 1) if loads else 0
+        high_load_days = sum(1 for load in loads if load >= 40)
+        training_summary = {
+            'recentTrainingLoad': avg_load,
+            'latestTrainingType': latest_type,
+            'latestTrainingDate': latest_date,
+            'highLoadDays': high_load_days,
+        }
+        summaries.append({**athlete, **summary, **training_summary})
 
     valid = [s for s in summaries if s.get('hrv') is not None]
     n = len(valid) or 1
@@ -983,15 +1034,24 @@ def create_training_metric(user_id: int, data: dict) -> dict:
     conn = get_db()
     cursor = conn.cursor()
     is_mysql = conn._is_mysql
-    sql = _upsert_sql(
-        'training_metrics',
-        ['user_id', 'date', 'distance', 'avg_split', 'avg_spm', 'max_hr', 'avg_hr', 'duration_minutes', 'created_at'],
-        ['user_id', 'date'],
-        ['distance', 'avg_split', 'avg_spm', 'max_hr', 'avg_hr', 'duration_minutes'],
-        is_mysql,
-    )
-    cursor.execute(sql, (user_id, date, data.get('distance'), data.get('avgSplit'), data.get('avgSPM'),
-                         data.get('maxHR'), data.get('avgHR'), data.get('duration'), now))
+    columns = [
+        'user_id', 'date', 'distance', 'avg_split', 'avg_spm', 'max_hr', 'avg_hr', 'duration_minutes',
+        'training_type', 'training_phase', 'intensity_score', 'volume_score', 'focus_area', 'coach_notes',
+        'planned_load', 'actual_load', 'created_at',
+    ]
+    update_columns = [
+        'distance', 'avg_split', 'avg_spm', 'max_hr', 'avg_hr', 'duration_minutes',
+        'training_type', 'training_phase', 'intensity_score', 'volume_score', 'focus_area', 'coach_notes',
+        'planned_load', 'actual_load',
+    ]
+    sql = _upsert_sql('training_metrics', columns, ['user_id', 'date'], update_columns, is_mysql)
+    cursor.execute(sql, (
+        user_id, date,
+        data.get('distance'), data.get('avgSplit'), data.get('avgSPM'), data.get('maxHR'), data.get('avgHR'), data.get('duration'),
+        data.get('trainingType'), data.get('trainingPhase'), data.get('intensityScore'), data.get('volumeScore'),
+        data.get('focusArea'), data.get('coachNotes'), data.get('plannedLoad'), data.get('actualLoad'),
+        now,
+    ))
     row_id = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -1013,6 +1073,110 @@ def list_training_metrics(user_id: int, limit: int = 180) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _load_indexed_metrics(user_id: int, table: str, columns: list[str], limit: int = 180) -> dict:
+    """Load metrics indexed by date for quick lookup."""
+    conn = get_db()
+    cols = ', '.join(columns)
+    rows = conn.execute(
+        f'SELECT date, {cols} FROM {table} WHERE user_id = ? ORDER BY date DESC LIMIT ?',
+        (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return {r['date']: dict(r) for r in rows}
+
+
+def get_training_impact(user_id: int, date: str) -> dict:
+    """Compare health metrics 1-3 days after a training session vs the day before."""
+    training_rows = list_training_metrics(user_id, limit=180)
+    training_by_date = {t['date']: t for t in training_rows}
+    training = training_by_date.get(date)
+    if not training:
+        return {'error': 'Training session not found'}
+
+    health = _load_indexed_metrics(user_id, 'health_metrics', ['hrv', 'rhr', 'sleep_hours'], limit=180)
+
+    def _delta(target_date: str, baseline_date: str, key: str):
+        t = health.get(target_date, {}).get(key)
+        b = health.get(baseline_date, {}).get(key)
+        if t is None or b is None or b == 0:
+            return None
+        return round((t - b) / b * 100, 2)
+
+    baseline_date = (datetime.strptime(date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+    impacts = []
+    for offset in [1, 2, 3]:
+        target_date = (datetime.strptime(date, '%Y-%m-%d') + timedelta(days=offset)).strftime('%Y-%m-%d')
+        impacts.append({
+            'day': offset,
+            'date': target_date,
+            'hrvChangePct': _delta(target_date, baseline_date, 'hrv'),
+            'rhrChangePct': _delta(target_date, baseline_date, 'rhr'),
+            'sleepChangePct': _delta(target_date, baseline_date, 'sleep_hours'),
+            'hrv': health.get(target_date, {}).get('hrv'),
+            'rhr': health.get(target_date, {}).get('rhr'),
+            'sleepHours': health.get(target_date, {}).get('sleep_hours'),
+        })
+
+    return {
+        'trainingDate': date,
+        'training': training_metric_to_public(training),
+        'baselineDate': baseline_date,
+        'baseline': {
+            'hrv': health.get(baseline_date, {}).get('hrv'),
+            'rhr': health.get(baseline_date, {}).get('rhr'),
+            'sleepHours': health.get(baseline_date, {}).get('sleep_hours'),
+        },
+        'impacts': impacts,
+    }
+
+
+def get_training_health_correlation(user_id: int, days: int = 28) -> dict:
+    """Compute simple Pearson-like correlation between training load and health metrics."""
+    training_rows = list_training_metrics(user_id, limit=days + 3)
+    health_rows = list_health_metrics(user_id, limit=days + 3)
+
+    # Pair training load on day D with health metrics on day D+1 (next morning)
+    health_by_date = {h['date']: h for h in health_rows}
+    pairs = []
+    for t in training_rows:
+        d = datetime.strptime(t['date'], '%Y-%m-%d') + timedelta(days=1)
+        next_date = d.strftime('%Y-%m-%d')
+        h = health_by_date.get(next_date)
+        if not h:
+            continue
+        load = (t.get('intensity_score') or 5) * (t.get('volume_score') or 5)
+        pairs.append({
+            'date': t['date'],
+            'load': load,
+            'hrv': h.get('hrv'),
+            'rhr': h.get('rhr'),
+            'sleepHours': h.get('sleep_hours'),
+        })
+
+    def _corr(values_x, values_y):
+        n = len(values_x)
+        if n < 3:
+            return None
+        mean_x = sum(values_x) / n
+        mean_y = sum(values_y) / n
+        num = sum((x - mean_x) * (y - mean_y) for x, y in zip(values_x, values_y))
+        den_x = math.sqrt(sum((x - mean_x) ** 2 for x in values_x))
+        den_y = math.sqrt(sum((y - mean_y) ** 2 for y in values_y))
+        if den_x == 0 or den_y == 0:
+            return None
+        return round(num / (den_x * den_y), 3)
+
+    return {
+        'days': days,
+        'pairs': pairs,
+        'correlations': {
+            'loadVsHrv': _corr([p['load'] for p in pairs], [p['hrv'] for p in pairs]),
+            'loadVsRhr': _corr([p['load'] for p in pairs], [p['rhr'] for p in pairs]),
+            'loadVsSleep': _corr([p['load'] for p in pairs], [p['sleepHours'] for p in pairs]),
+        },
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1250,6 +1414,14 @@ def training_metric_to_public(m: dict) -> dict:
         'maxHR': m['max_hr'],
         'avgHR': m['avg_hr'],
         'duration': m['duration_minutes'],
+        'trainingType': m.get('training_type'),
+        'trainingPhase': m.get('training_phase'),
+        'intensityScore': m.get('intensity_score'),
+        'volumeScore': m.get('volume_score'),
+        'focusArea': m.get('focus_area'),
+        'coachNotes': m.get('coach_notes'),
+        'plannedLoad': m.get('planned_load'),
+        'actualLoad': m.get('actual_load'),
         'createdAt': m['created_at'],
     }
 

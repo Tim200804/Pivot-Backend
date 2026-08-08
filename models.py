@@ -8,11 +8,18 @@ from urllib.parse import urlparse
 #  Database URL parsing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///pivot.db')
+DATABASE_URL = (
+    os.environ.get('DATABASE_URL')
+    or os.environ.get('MYSQL_URL')
+    or os.environ.get('MYSQL_PUBLIC_URL')
+    or os.environ.get('MYSQL_PRIVATE_URL')
+    or os.environ.get('MYSQLDATABASE')
+    or 'sqlite:///pivot.db'
+)
 
 
 def _is_mysql() -> bool:
-    return DATABASE_URL.startswith('mysql')
+    return isinstance(DATABASE_URL, str) and DATABASE_URL.startswith('mysql')
 
 
 def _parse_mysql_url(url: str) -> dict:

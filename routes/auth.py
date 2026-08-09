@@ -3,6 +3,8 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 import bcrypt
 import re
 from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
+from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password
+from email_service import generate_reset_code, send_reset_email
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
@@ -242,3 +244,82 @@ def update_preferences():
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     return jsonify({'success': True, 'user': user_to_public(user)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Password Reset
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@auth_bp.route('/forgot-password', methods=['POST'])
+def forgot_password():
+    """Send a 6-digit reset code to the user's email."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+    if not _is_valid_email(email):
+        return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+
+    user = get_user_by_email(email)
+    if not user:
+        # Return success even if user not found to prevent email enumeration
+        return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+
+    code = generate_reset_code()
+    create_reset_code(email, code)
+
+    sent = send_reset_email(email, code, user.get('name'))
+    if not sent:
+        return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
+
+    return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+
+
+@auth_bp.route('/verify-reset-code', methods=['POST'])
+def verify_reset_code():
+    """Verify that the 6-digit code is valid and not expired."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    code = (data.get('code') or '').strip()
+
+    if not email or not code:
+        return jsonify({'success': False, 'message': 'Email and code are required'}), 400
+
+    record = get_valid_reset_code(email, code)
+    if not record:
+        return jsonify({'success': False, 'message': 'Invalid or expired code'}), 400
+
+    return jsonify({'success': True, 'message': 'Code verified'})
+
+
+@auth_bp.route('/reset-password', methods=['POST'])
+def reset_password():
+    """Reset password using a verified 6-digit code."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    code = (data.get('code') or '').strip()
+    new_password = data.get('newPassword', '')
+
+    if not email or not code or not new_password:
+        return jsonify({'success': False, 'message': 'Email, code, and new password are required'}), 400
+
+    if not PASSWORD_RE.match(new_password):
+        return jsonify({
+            'success': False,
+            'message': 'Password must be at least 8 characters and contain both letters and digits',
+        }), 400
+
+    record = get_valid_reset_code(email, code)
+    if not record:
+        return jsonify({'success': False, 'message': 'Invalid or expired code'}), 400
+
+    user = get_user_by_email(email)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    password_hash = _hash_password(new_password)
+    update_user_password(user['id'], password_hash)
+    mark_reset_code_used(record['id'])
+
+    return jsonify({'success': True, 'message': 'Password has been reset successfully'})

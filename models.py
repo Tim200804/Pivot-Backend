@@ -605,6 +605,28 @@ def init_db():
     _create_index_if_not_exists(conn, 'idx_interventions_athlete', 'interventions', 'athlete_id')
     _create_index_if_not_exists(conn, 'idx_interventions_coach', 'interventions', 'coach_id')
 
+    # ── password_reset_codes ──
+    if is_mysql:
+        conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            email VARCHAR(255) NOT NULL,
+            code VARCHAR(6) NOT NULL,
+            expires_at VARCHAR(30) NOT NULL,
+            used INT NOT NULL DEFAULT 0,
+            created_at VARCHAR(30) NOT NULL
+        )''')
+    else:
+        conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            code TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )''')
+
+    _create_index_if_not_exists(conn, 'idx_reset_codes_email', 'password_reset_codes', 'email, created_at')
+
     conn.commit()
     conn.close()
 
@@ -722,6 +744,69 @@ def user_to_public(user: dict) -> dict:
         'preferences': prefs,
         'createdAt': user['created_at'],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Password Reset
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def create_reset_code(email: str, code: str) -> None:
+    """Store a new password reset code. Invalidates any existing codes for this email."""
+    now = datetime.utcnow().isoformat()
+    expires = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
+    conn = get_db()
+    # Mark any existing codes as used
+    conn.execute("UPDATE password_reset_codes SET used = 1 WHERE email = ? AND used = 0", (email,))
+    conn.execute('''
+        INSERT INTO password_reset_codes (email, code, expires_at, used, created_at)
+        VALUES (?, ?, ?, 0, ?)
+    ''', (email, code, expires, now))
+    conn.commit()
+    conn.close()
+
+
+def get_valid_reset_code(email: str, code: str) -> dict | None:
+    """Return the reset code record if it exists, is unused, and not expired."""
+    conn = get_db()
+    row = conn.execute('''
+        SELECT * FROM password_reset_codes
+        WHERE email = ? AND code = ? AND used = 0
+        ORDER BY created_at DESC LIMIT 1
+    ''', (email, code)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    record = dict(row)
+    if datetime.utcnow().isoformat() > record['expires_at']:
+        return None
+    return record
+
+
+def mark_reset_code_used(code_id: int) -> None:
+    conn = get_db()
+    conn.execute('UPDATE password_reset_codes SET used = 1 WHERE id = ?', (code_id,))
+    conn.commit()
+    conn.close()
+
+
+def cleanup_expired_reset_codes() -> None:
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute('DELETE FROM password_reset_codes WHERE expires_at < ?', (now,))
+    conn.commit()
+    conn.close()
+
+
+def update_user_password(user_id: int, password_hash: str) -> dict | None:
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?',
+        (password_hash, now, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return get_user_by_id(user_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

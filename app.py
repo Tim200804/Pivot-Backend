@@ -31,8 +31,8 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key')
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 7 * 24 * 60 * 60  # 7 days in seconds
 
-    # Extensions
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # Extensions — permissive CORS for all origins (API + SPA hosted separately)
+    CORS(app, resources={r"/*": {"origins": "*", "allow_headers": "*", "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]}})
     JWTManager(app)
 
     # Routes

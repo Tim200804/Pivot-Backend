@@ -19,7 +19,7 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
 
     Falls back to printing the code in development if no SMTP is configured.
     """
-    host = os.environ.get('SMTP_HOST')
+    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
     port = int(os.environ.get('SMTP_PORT', 587))
     user = os.environ.get('SMTP_USER')
     password = os.environ.get('SMTP_PASSWORD')

@@ -70,9 +70,6 @@ If you didn't request a password reset, you can safely ignore this email.
 
     # Development fallback: print to console if no SMTP configured
     if not host or not password:
-        print(f"\n{'='*50}")
-        print(f"[DEV] Password reset code for {to_email}: {code}")
-        print(f"{'='*50}\n")
         return True
 
     msg = MIMEMultipart('alternative')

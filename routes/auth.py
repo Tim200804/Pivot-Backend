@@ -285,30 +285,34 @@ def init_reset_table():
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
     """Send a 6-digit reset code to the user's email."""
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
 
-    if not email:
-        return jsonify({'success': False, 'message': 'Email is required'}), 400
-    if not _is_valid_email(email):
-        return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'}), 400
+        if not _is_valid_email(email):
+            return jsonify({'success': False, 'message': 'Invalid email format'}), 400
 
-    user = get_user_by_email(email)
-    if not user:
-        # Return success even if user not found to prevent email enumeration
+        user = get_user_by_email(email)
+        if not user:
+            # Return success even if user not found to prevent email enumeration
+            return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+
+        code = generate_reset_code()
+        create_reset_code(email, code)
+
+        sent = send_reset_email(email, code, user.get('name'))
+        if not sent:
+            import os
+            if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
+                return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
+            return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
+
         return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
-
-    code = generate_reset_code()
-    create_reset_code(email, code)
-
-    sent = send_reset_email(email, code, user.get('name'))
-    if not sent:
-        import os
-        if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
-            return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
-        return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
-
-    return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc()}), 500
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

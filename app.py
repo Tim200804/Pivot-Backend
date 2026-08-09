@@ -55,12 +55,17 @@ def create_app():
         try:
             from models import get_db
             conn = get_db()
-            stats['users'] = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
-            stats['health_metrics'] = conn.execute('SELECT COUNT(*) FROM health_metrics').fetchone()[0]
-            stats['training_metrics'] = conn.execute('SELECT COUNT(*) FROM training_metrics').fetchone()[0]
-            stats['alerts'] = conn.execute('SELECT COUNT(*) FROM alerts').fetchone()[0]
-            stats['checkins'] = conn.execute('SELECT COUNT(*) FROM checkins').fetchone()[0]
-            stats['messages'] = conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
+            def _count(table):
+                row = conn.execute(f'SELECT COUNT(*) AS c FROM {table}').fetchone()
+                return row['c'] if row else 0
+            stats['users'] = _count('users')
+            stats['health_metrics'] = _count('health_metrics')
+            stats['training_metrics'] = _count('training_metrics')
+            stats['alerts'] = _count('alerts')
+            stats['checkins'] = _count('checkins')
+            stats['messages'] = _count('messages')
+            stats['interventions'] = _count('interventions')
+            stats['coach_athlete_links'] = _count('coach_athlete_links')
             conn.close()
         except Exception as e:
             stats['error'] = str(e)

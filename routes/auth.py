@@ -304,16 +304,16 @@ def forgot_password():
         create_reset_code(email, code)
 
         sent = send_reset_email(email, code, user.get('name'))
-        return jsonify({
-            'success': True,
-            'message': 'Complete.',
-            'sent': sent,
-            'step': 'email_sent',
-            'name': user.get('name'),
-        })
-    except BaseException as e:
+        if not sent:
+            import os
+            if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
+                return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
+            return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
+
+        return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+    except Exception as e:
         import traceback
-        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc(), 'type': type(e).__name__}), 500
+        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc()}), 500
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

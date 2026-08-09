@@ -68,7 +68,7 @@ This code will expire in 15 minutes.
 If you didn't request a password reset, you can safely ignore this email.
 """
 
-    # Development fallback: print to console if no SMTP configured
+    # Development fallback: return True if no SMTP configured
     if not host or not password:
         return True
 
@@ -80,11 +80,11 @@ If you didn't request a password reset, you can safely ignore this email.
     msg.attach(MIMEText(html_body, 'html'))
 
     try:
-        with smtplib.SMTP(host, port) as server:
+        with smtplib.SMTP(host, port, timeout=10) as server:
             server.starttls()
             server.login(user, password)
             server.sendmail(from_addr, [to_email], msg.as_string())
         return True
-    except Exception as e:
-        print(f"[Email] Failed to send reset email to {to_email}: {e}")
+    except BaseException as e:
+        print(f"[Email] Failed to send reset email to {to_email}: {type(e).__name__}: {e}")
         return False

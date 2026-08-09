@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
@@ -34,6 +34,27 @@ def create_app():
     # Extensions — permissive CORS for all origins (API + SPA hosted separately)
     CORS(app, resources={r"/*": {"origins": "*", "allow_headers": "*", "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]}})
     JWTManager(app)
+
+    # after_request fallback: echo the concrete Origin back when present so credentials
+    # work across any frontend domain (including CloudStudio previews). If no Origin
+    # header is sent, fall back to '*' to keep non-browser clients unblocked.
+    @app.after_request
+    def _apply_cors_fallback(response):
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+
+        # Keep cache honest when multiple origins may hit the same URL
+        if origin:
+            response.headers['Vary'] = 'Origin'
+
+        return response
 
     # Routes
     app.register_blueprint(auth_bp)

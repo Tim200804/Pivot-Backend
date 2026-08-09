@@ -298,7 +298,14 @@ def forgot_password():
         # Return success even if user not found to prevent email enumeration
         return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
 
-    return jsonify({'debug': 'v2-user-found', 'email': email, 'name': user.get('name')})
+    try:
+        code = generate_reset_code()
+        create_reset_code(email, code)
+        return jsonify({'debug': 'code created', 'code': code})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'create_reset_code failed: {str(e)}'}), 500
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

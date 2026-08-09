@@ -298,14 +298,17 @@ def forgot_password():
         # Return success even if user not found to prevent email enumeration
         return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
 
-    try:
-        code = generate_reset_code()
-        create_reset_code(email, code)
-        return jsonify({'debug': 'code created', 'code': code})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': f'create_reset_code failed: {str(e)}'}), 500
+    code = generate_reset_code()
+    create_reset_code(email, code)
+
+    sent = send_reset_email(email, code, user.get('name'))
+    if not sent:
+        import os
+        if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
+            return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
+        return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
+
+    return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

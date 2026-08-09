@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
+import threading
 from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
 from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password, get_db
 from email_service import generate_reset_code, send_reset_email
@@ -302,16 +303,17 @@ def forgot_password():
         code = generate_reset_code()
         create_reset_code(email, code)
 
+        sent = send_reset_email(email, code, user.get('name'))
         return jsonify({
             'success': True,
-            'message': 'Code created (no email sent).',
-            'step': 'code_created',
-            'code': code,
+            'message': 'Complete.',
+            'sent': sent,
+            'step': 'email_sent',
             'name': user.get('name'),
         })
-    except Exception as e:
+    except BaseException as e:
         import traceback
-        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc()}), 500
+        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc(), 'type': type(e).__name__}), 500
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

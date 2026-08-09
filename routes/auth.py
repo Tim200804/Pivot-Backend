@@ -299,6 +299,9 @@ def forgot_password():
             return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
 
         return jsonify({'step': 'user_found', 'name': user.get('name')})
+
+        code = generate_reset_code()
+        return jsonify({'step': 'code_generated', 'code': code})
     except Exception as e:
         import traceback
         return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc()}), 500

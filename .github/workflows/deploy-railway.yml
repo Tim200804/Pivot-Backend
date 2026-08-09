@@ -37,4 +37,4 @@ jobs:
             echo "Create a Project Token in Railway (Project Settings → Tokens) and add it as RAILWAY_TOKEN."
             exit 1
           fi
-          railway up --ci --service web --detach
+          railway up --ci --service pivot-backend --detach

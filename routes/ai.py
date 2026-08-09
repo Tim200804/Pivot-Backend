@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, Response, stream_with_context
+from flask import Blueprint, request, jsonify
 from openai import OpenAI
 import os, json, re, time, traceback, threading
 
@@ -14,27 +14,6 @@ _MOONSHOT_MAX_CONCURRENCY = max(1, int(os.environ.get('MOONSHOT_MAX_CONCURRENCY'
 _moonshot_sem = threading.Semaphore(_MOONSHOT_MAX_CONCURRENCY)
 _MOONSHOT_MAX_RETRIES = max(1, int(os.environ.get('MOONSHOT_MAX_RETRIES', '5')))
 _MOONSHOT_SLOT_TIMEOUT = float(os.environ.get('MOONSHOT_SLOT_TIMEOUT', '90'))
-
-
-class _StreamGuard:
-    """Release the Moonshot concurrency slot when the stream finishes or errors."""
-
-    def __init__(self, stream, sem):
-        self._stream = stream
-        self._sem = sem
-        self._released = False
-
-    def __iter__(self):
-        try:
-            for chunk in self._stream:
-                yield chunk
-        finally:
-            self.release()
-
-    def release(self):
-        if not self._released:
-            self._released = True
-            self._sem.release()
 
 
 def _is_rate_limit_error(exc):
@@ -95,10 +74,9 @@ def _create_completion(**kwargs):
     Call Moonshot with:
     1) local semaphore so we don't exceed org concurrency (default 2 of 3)
     2) retries on 429 concurrency / rate_limit errors
-    For stream=True, the semaphore is held until the stream is fully consumed.
+    Returns the full completion object (non-streaming).
     """
     client = _get_client()
-    stream = bool(kwargs.get('stream'))
     last_err = None
 
     for attempt in range(_MOONSHOT_MAX_RETRIES):
@@ -107,11 +85,7 @@ def _create_completion(**kwargs):
             raise TimeoutError('AI service is busy, please try again in a moment')
 
         try:
-            result = client.chat.completions.create(**kwargs)
-            if stream:
-                return _StreamGuard(result, _moonshot_sem)
-            _moonshot_sem.release()
-            return result
+            return client.chat.completions.create(**kwargs)
         except Exception as e:
             _moonshot_sem.release()
             last_err = e
@@ -244,10 +218,9 @@ def ai_insight():
 @ai_bp.route('/chat', methods=['POST'])
 def ai_chat():
     """
-    Real Kimi conversation with SSE streaming (stream=True → Moonshot).
-    Emits text/event-stream chunks:
-      data: {"content":"..."}\n\n
-      data: [DONE]\n\n
+    Real Kimi conversation — non-streaming JSON response.
+    Returns: {"success": true, "text": "..."}
+    (Streaming was disabled to simplify the client; full text arrives at once.)
     """
     try:
         data = request.get_json() or {}
@@ -279,44 +252,18 @@ def ai_chat():
             return jsonify({'success': False, 'message': 'at least one user message required'}), 400
 
         try:
-            stream = _create_completion(
+            completion = _create_completion(
                 model='kimi-k2.6',
                 messages=api_messages,
                 max_tokens=4000,
-                stream=True,
             )
+            text = (completion.choices[0].message.content or '').strip()
+            if not text:
+                return jsonify({'success': False, 'message': 'Empty AI response'}), 502
+            return jsonify({'success': True, 'text': text})
         except Exception as e:
             traceback.print_exc()
             return _ai_error_response(e)
-
-        def generate():
-            try:
-                for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    content = getattr(delta, 'content', None) or ''
-                    if content:
-                        yield f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-                yield 'data: [DONE]\n\n'
-            except Exception as e:
-                traceback.print_exc()
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-                yield 'data: [DONE]\n\n'
-            finally:
-                # Extra safety if iteration never started
-                if isinstance(stream, _StreamGuard):
-                    stream.release()
-
-        return Response(
-            stream_with_context(generate()),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache, no-transform',
-                'X-Accel-Buffering': 'no',
-                'Connection': 'keep-alive',
-            },
-        )
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500

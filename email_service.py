@@ -1,0 +1,93 @@
+import os
+import smtplib
+import random
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+
+def generate_reset_code() -> str:
+    """Generate a 6-digit numeric reset code."""
+    return f"{random.randint(100000, 999999)}"
+
+
+def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
+    """Send a password reset email with the 6-digit verification code.
+
+    SMTP configuration is read from environment variables:
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
+      SMTP_FROM, SMTP_FROM_NAME
+
+    Falls back to printing the code in development if no SMTP is configured.
+    """
+    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    port = int(os.environ.get('SMTP_PORT', 587))
+    user = os.environ.get('SMTP_USER')
+    password = os.environ.get('SMTP_PASSWORD')
+    from_addr = os.environ.get('SMTP_FROM', user or 'noreply@pivot-app.com')
+    from_name = os.environ.get('SMTP_FROM_NAME', 'Pivot')
+
+    greeting = f"Hi {user_name}," if user_name else "Hi,"
+    subject = "Your Pivot Password Reset Code"
+
+    html_body = f"""
+    <html>
+    <body style="font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, sans-serif; color: #1e293b; background: #f8fafc; padding: 40px 20px;">
+      <div style="max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 20px; padding: 40px; box-shadow: 0 4px 24px rgba(0,0,0,0.06);">
+        <div style="text-align: center; margin-bottom: 32px;">
+          <h1 style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 0;">Pivot</h1>
+          <p style="font-size: 13px; color: #64748b; margin: 4px 0 0;">Athlete Resilience Platform</p>
+        </div>
+        <p style="font-size: 15px; line-height: 1.6; color: #334155;">{greeting}</p>
+        <p style="font-size: 15px; line-height: 1.6; color: #334155;">
+          We received a request to reset your Pivot password. Use the code below to verify your identity:
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <div style="display: inline-block; background: linear-gradient(135deg, #3b82f6, #2563eb); color: #ffffff; font-size: 32px; font-weight: 800; letter-spacing: 8px; padding: 20px 36px; border-radius: 16px; font-family: 'SF Mono', monospace;">
+            {code}
+          </div>
+        </div>
+        <p style="font-size: 14px; line-height: 1.6; color: #64748b; text-align: center;">
+          This code will expire in <strong>15 minutes</strong>.
+        </p>
+        <p style="font-size: 13px; line-height: 1.6; color: #94a3b8; margin-top: 32px; text-align: center;">
+          If you didn't request a password reset, you can safely ignore this email.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"""{greeting}
+
+We received a request to reset your Pivot password.
+
+Your verification code is: {code}
+
+This code will expire in 15 minutes.
+
+If you didn't request a password reset, you can safely ignore this email.
+"""
+
+    # Development fallback: print to console if no SMTP configured
+    if not host or not password:
+        print(f"\n{'='*50}")
+        print(f"[DEV] Password reset code for {to_email}: {code}")
+        print(f"{'='*50}\n")
+        return True
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = f"{from_name} <{from_addr}>"
+    msg['To'] = to_email
+    msg.attach(MIMEText(text_body, 'plain'))
+    msg.attach(MIMEText(html_body, 'html'))
+
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.sendmail(from_addr, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        print(f"[Email] Failed to send reset email to {to_email}: {e}")
+        return False

@@ -9,7 +9,9 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+!railway_seed.db
 .env
 .env.local
 .env.production
 .DS_Store
+seed_tim_yang.py

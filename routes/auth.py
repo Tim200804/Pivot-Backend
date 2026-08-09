@@ -2,13 +2,18 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
-from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public
+from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
+from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password, get_db
+from email_service import generate_reset_code, send_reset_email
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
-# RFC 5322 simplified email regex
-EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+# Permissive email regex: any non-whitespace local part, an @, and a domain with a TLD >= 2 chars.
+EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$')
+
+# Password: at least 8 chars, alphanumeric only, and must contain at least one letter and one digit.
+PASSWORD_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$')
 
 
 def _hash_password(password: str) -> str:
@@ -77,8 +82,11 @@ def register():
     if not _is_valid_email(email):
         return jsonify({'success': False, 'message': 'Invalid email format'}), 400
 
-    if len(data['password']) < 6:
-        return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
+    if not PASSWORD_RE.match(data['password']):
+        return jsonify({
+            'success': False,
+            'message': 'Password must be at least 8 characters and contain both letters and digits',
+        }), 400
 
     if data['role'] not in ('athlete', 'coach'):
         return jsonify({'success': False, 'message': 'Role must be athlete or coach'}), 400
@@ -193,6 +201,32 @@ def list_athletes():
     })
 
 
+@auth_bp.route('/coaches', methods=['GET'])
+@jwt_required()
+def list_coaches_route():
+    """Return a lightweight directory of coaches for peer notifications."""
+    user_id = int(get_jwt_identity())
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if user['role'] != 'coach':
+        return jsonify({'success': False, 'message': 'Only coaches can list coaches'}), 403
+    coaches = list_coaches(exclude_id=user_id)
+    return jsonify({
+        'success': True,
+        'coaches': [
+            {
+                'id': c['id'],
+                'name': c['name'],
+                'email': c['email'],
+                'sport': c['sport'],
+                'coachRole': c['coach_role'],
+            }
+            for c in coaches
+        ]
+    })
+
+
 @auth_bp.route('/me/preferences', methods=['PATCH', 'PUT'])
 @jwt_required()
 def update_preferences():
@@ -210,3 +244,107 @@ def update_preferences():
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     return jsonify({'success': True, 'user': user_to_public(user)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Password Reset
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@auth_bp.route('/_init-reset-table', methods=['POST'])
+def init_reset_table():
+    """Temporary endpoint to create password_reset_codes table on Railway."""
+    conn = get_db()
+    is_mysql = conn._is_mysql
+    try:
+        if is_mysql:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                email VARCHAR(255) NOT NULL,
+                code VARCHAR(6) NOT NULL,
+                expires_at VARCHAR(30) NOT NULL,
+                used INT NOT NULL DEFAULT 0,
+                created_at VARCHAR(30) NOT NULL
+            )''')
+        else:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                code TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )''')
+        conn.commit()
+        return jsonify({'success': True, 'message': 'password_reset_codes table created'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        conn.close()
+
+
+@auth_bp.route('/forgot-password', methods=['POST'])
+def forgot_password():
+    """Send a 6-digit reset code to the user's email."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+    if not _is_valid_email(email):
+        return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+
+    user = get_user_by_email(email)
+    if not user:
+        # Return success even if user not found to prevent email enumeration
+        return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+
+    return jsonify({'debug': 'user found', 'name': user.get('name')})
+
+
+@auth_bp.route('/verify-reset-code', methods=['POST'])
+def verify_reset_code():
+    """Verify that the 6-digit code is valid and not expired."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    code = (data.get('code') or '').strip()
+
+    if not email or not code:
+        return jsonify({'success': False, 'message': 'Email and code are required'}), 400
+
+    record = get_valid_reset_code(email, code)
+    if not record:
+        return jsonify({'success': False, 'message': 'Invalid or expired code'}), 400
+
+    return jsonify({'success': True, 'message': 'Code verified'})
+
+
+@auth_bp.route('/reset-password', methods=['POST'])
+def reset_password():
+    """Reset password using a verified 6-digit code."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    code = (data.get('code') or '').strip()
+    new_password = data.get('newPassword', '')
+
+    if not email or not code or not new_password:
+        return jsonify({'success': False, 'message': 'Email, code, and new password are required'}), 400
+
+    if not PASSWORD_RE.match(new_password):
+        return jsonify({
+            'success': False,
+            'message': 'Password must be at least 8 characters and contain both letters and digits',
+        }), 400
+
+    record = get_valid_reset_code(email, code)
+    if not record:
+        return jsonify({'success': False, 'message': 'Invalid or expired code'}), 400
+
+    user = get_user_by_email(email)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    password_hash = _hash_password(new_password)
+    update_user_password(user['id'], password_hash)
+    mark_reset_code_used(record['id'])
+
+    return jsonify({'success': True, 'message': 'Password has been reset successfully'})

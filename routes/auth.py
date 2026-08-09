@@ -3,7 +3,7 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 import bcrypt
 import re
 from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
-from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password
+from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password, get_db
 from email_service import generate_reset_code, send_reset_email
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
@@ -250,6 +250,38 @@ def update_preferences():
 #  Password Reset
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@auth_bp.route('/_init-reset-table', methods=['POST'])
+def init_reset_table():
+    """Temporary endpoint to create password_reset_codes table on Railway."""
+    conn = get_db()
+    is_mysql = conn._is_mysql
+    try:
+        if is_mysql:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                email VARCHAR(255) NOT NULL,
+                code VARCHAR(6) NOT NULL,
+                expires_at VARCHAR(30) NOT NULL,
+                used INT NOT NULL DEFAULT 0,
+                created_at VARCHAR(30) NOT NULL
+            )''')
+        else:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                code TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )''')
+        conn.commit()
+        return jsonify({'success': True, 'message': 'password_reset_codes table created'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        conn.close()
+
+
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
     """Send a 6-digit reset code to the user's email."""
@@ -271,6 +303,9 @@ def forgot_password():
 
     sent = send_reset_email(email, code, user.get('name'))
     if not sent:
+        import os
+        if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
+            return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
         return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
 
     return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})

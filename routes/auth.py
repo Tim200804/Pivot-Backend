@@ -298,10 +298,21 @@ def forgot_password():
         # Return success even if user not found to prevent email enumeration
         return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
 
-    code = generate_reset_code()
-    create_reset_code(email, code)
+    try:
+        code = generate_reset_code()
+        create_reset_code(email, code)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'create_reset_code failed: {str(e)}'}), 500
 
-    sent = send_reset_email(email, code, user.get('name'))
+    try:
+        sent = send_reset_email(email, code, user.get('name'))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'send_reset_email failed: {str(e)}'}), 500
+
     if not sent:
         import os
         if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):

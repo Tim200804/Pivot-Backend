@@ -22,7 +22,6 @@ from routes.checkins import checkins_bp
 from routes.health import health_bp
 from routes.alerts import alerts_bp
 from routes.interventions import interventions_bp
-from routes.admin import admin_bp
 
 
 def create_app():
@@ -45,7 +44,6 @@ def create_app():
     app.register_blueprint(health_bp)
     app.register_blueprint(alerts_bp)
     app.register_blueprint(interventions_bp)
-    app.register_blueprint(admin_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])

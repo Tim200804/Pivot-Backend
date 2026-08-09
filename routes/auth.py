@@ -301,12 +301,12 @@ def forgot_password():
 
         code = generate_reset_code()
         create_reset_code(email, code)
-        send_reset_email(email, code, user.get('name'))
 
         return jsonify({
             'success': True,
-            'message': 'If an account exists, a reset code has been sent.',
-            'step': 'code_sent',
+            'message': 'Code created (no email sent).',
+            'step': 'code_created',
+            'code': code,
             'name': user.get('name'),
         })
     except Exception as e:

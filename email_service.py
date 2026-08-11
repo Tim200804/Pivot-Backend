@@ -1,8 +1,6 @@
 import os
-import smtplib
 import random
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 
 
 def generate_reset_code() -> str:
@@ -10,25 +8,8 @@ def generate_reset_code() -> str:
     return f"{random.randint(100000, 999999)}"
 
 
-def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
-    """Send a password reset email with the 6-digit verification code.
-
-    SMTP configuration is read from environment variables:
-      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
-      SMTP_FROM, SMTP_FROM_NAME
-
-    Falls back to printing the code in development if no SMTP is configured.
-    """
-    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-    port = int(os.environ.get('SMTP_PORT', 587))
-    user = os.environ.get('SMTP_USER')
-    password = os.environ.get('SMTP_PASSWORD')
-    from_addr = os.environ.get('SMTP_FROM', user or 'noreply@pivot-app.com')
-    from_name = os.environ.get('SMTP_FROM_NAME', 'Pivot')
-
+def _build_email_bodies(code: str, user_name: str | None = None) -> tuple[str, str]:
     greeting = f"Hi {user_name}," if user_name else "Hi,"
-    subject = "Your Pivot Password Reset Code"
-
     html_body = f"""
     <html>
     <body style="font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, sans-serif; color: #1e293b; background: #f8fafc; padding: 40px 20px;">
@@ -56,7 +37,6 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
     </body>
     </html>
     """
-
     text_body = f"""{greeting}
 
 We received a request to reset your Pivot password.
@@ -67,27 +47,60 @@ This code will expire in 15 minutes.
 
 If you didn't request a password reset, you can safely ignore this email.
 """
+    return text_body, html_body
 
-    # Development fallback: print to console if no SMTP configured
-    if not host or not password:
-        print(f"\n{'='*50}")
-        print(f"[DEV] Password reset code for {to_email}: {code}")
-        print(f"{'='*50}\n")
+
+def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
+    """Send a password reset email via Resend HTTP API.
+
+    Railway blocks outbound SMTP; Resend uses HTTPS and works on Railway.
+
+    Env vars:
+      RESEND_API_KEY  — required in production
+      EMAIL_FROM      — e.g. "Pivot <onboarding@resend.dev>" or your verified domain
+      EMAIL_FROM_NAME — optional display name if EMAIL_FROM is a bare address
+
+    Without RESEND_API_KEY, logs the code (local/dev fallback) and returns True.
+    """
+    api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
+    from_addr = (os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM') or '').strip()
+    from_name = (os.environ.get('EMAIL_FROM_NAME') or os.environ.get('SMTP_FROM_NAME') or 'Pivot').strip()
+
+    if not from_addr:
+        from_addr = f'{from_name} <onboarding@resend.dev>'
+    elif '<' not in from_addr and from_name:
+        from_addr = f'{from_name} <{from_addr}>'
+
+    text_body, html_body = _build_email_bodies(code, user_name)
+    subject = 'Your Pivot Password Reset Code'
+
+    # Local/dev fallback when Resend is not configured
+    if not api_key:
+        print(f"\n{'=' * 50}")
+        print(f'[DEV] RESEND_API_KEY not set — password reset code for {to_email}: {code}')
+        print(f"{'=' * 50}\n")
         return True
-
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = f"{from_name} <{from_addr}>"
-    msg['To'] = to_email
-    msg.attach(MIMEText(text_body, 'plain'))
-    msg.attach(MIMEText(html_body, 'html'))
 
     try:
-        with smtplib.SMTP(host, port) as server:
-            server.starttls()
-            server.login(user, password)
-            server.sendmail(from_addr, [to_email], msg.as_string())
+        resp = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': from_addr,
+                'to': [to_email],
+                'subject': subject,
+                'html': html_body,
+                'text': text_body,
+            },
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            print(f'[Email] Resend error {resp.status_code} for {to_email}: {resp.text}')
+            return False
         return True
     except Exception as e:
-        print(f"[Email] Failed to send reset email to {to_email}: {e}")
+        print(f'[Email] Failed to send reset email to {to_email}: {e}')
         return False

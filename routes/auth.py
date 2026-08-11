@@ -284,7 +284,7 @@ def init_reset_table():
 
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
-    """Send a 6-digit reset code to the user's email."""
+    """Generate a 6-digit reset code, store it, and email it via Resend."""
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
 
@@ -294,11 +294,22 @@ def forgot_password():
         return jsonify({'success': False, 'message': 'Invalid email format'}), 400
 
     user = get_user_by_email(email)
+    # Always return the same message to prevent email enumeration
+    ok_message = 'If an account exists, a reset code has been sent.'
     if not user:
-        # Return success even if user not found to prevent email enumeration
-        return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+        return jsonify({'success': True, 'message': ok_message})
 
-    return jsonify({'debug': 'user found', 'name': user.get('name')})
+    code = generate_reset_code()
+    try:
+        create_reset_code(email, code)
+    except Exception as e:
+        print(f'[forgot-password] failed to store reset code: {e}')
+        return jsonify({'success': False, 'message': 'Unable to start password reset. Please try again.'}), 500
+
+    if not send_reset_email(email, code, user.get('name')):
+        return jsonify({'success': False, 'message': 'Failed to send reset email'}), 502
+
+    return jsonify({'success': True, 'message': ok_message})
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

@@ -50,6 +50,9 @@ If you didn't request a password reset, you can safely ignore this email.
     return text_body, html_body
 
 
+DEFAULT_EMAIL_FROM = 'Pivot <noreply@internmatch.blog>'
+
+
 def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
     """Send a password reset email via Resend HTTP API.
 
@@ -57,19 +60,12 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
 
     Env vars:
       RESEND_API_KEY  — required in production
-      EMAIL_FROM      — e.g. "Pivot <noreply@internmatch.blog>"
-      EMAIL_FROM_NAME — optional display name if EMAIL_FROM is a bare address
+      EMAIL_FROM      — optional override; defaults to Pivot <noreply@internmatch.blog>
 
     Without RESEND_API_KEY, logs the code (local/dev fallback) and returns True.
     """
     api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
-    from_addr = (os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM') or '').strip()
-    from_name = (os.environ.get('EMAIL_FROM_NAME') or os.environ.get('SMTP_FROM_NAME') or 'Pivot').strip()
-
-    if not from_addr:
-        from_addr = f'{from_name} <onboarding@resend.dev>'
-    elif '<' not in from_addr and from_name:
-        from_addr = f'{from_name} <{from_addr}>'
+    from_addr = (os.environ.get('EMAIL_FROM') or '').strip() or DEFAULT_EMAIL_FROM
 
     text_body, html_body = _build_email_bodies(code, user_name)
     subject = 'Your Pivot Password Reset Code'

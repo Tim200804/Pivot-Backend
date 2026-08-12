@@ -750,11 +750,41 @@ def user_to_public(user: dict) -> dict:
 #  Password Reset
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _ensure_password_reset_table(conn):
+    """Ensure the password_reset_codes table exists (runtime migration safety)."""
+    is_mysql = conn._is_mysql
+    try:
+        conn.execute("SELECT 1 FROM password_reset_codes LIMIT 1")
+    except Exception:
+        if is_mysql:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                email VARCHAR(255) NOT NULL,
+                code VARCHAR(6) NOT NULL,
+                expires_at VARCHAR(30) NOT NULL,
+                used INT NOT NULL DEFAULT 0,
+                created_at VARCHAR(30) NOT NULL
+            )''')
+            conn.execute("CREATE INDEX idx_reset_codes_email ON password_reset_codes (email, created_at)")
+        else:
+            conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                code TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )''')
+            conn.execute("CREATE INDEX idx_reset_codes_email ON password_reset_codes (email, created_at)")
+        conn.commit()
+
+
 def create_reset_code(email: str, code: str) -> None:
     """Store a new password reset code. Invalidates any existing codes for this email."""
     now = datetime.utcnow().isoformat()
     expires = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
     conn = get_db()
+    _ensure_password_reset_table(conn)
     # Mark any existing codes as used
     conn.execute("UPDATE password_reset_codes SET used = 1 WHERE email = ? AND used = 0", (email,))
     conn.execute('''
@@ -768,6 +798,7 @@ def create_reset_code(email: str, code: str) -> None:
 def get_valid_reset_code(email: str, code: str) -> dict | None:
     """Return the reset code record if it exists, is unused, and not expired."""
     conn = get_db()
+    _ensure_password_reset_table(conn)
     row = conn.execute('''
         SELECT * FROM password_reset_codes
         WHERE email = ? AND code = ? AND used = 0
@@ -784,6 +815,7 @@ def get_valid_reset_code(email: str, code: str) -> dict | None:
 
 def mark_reset_code_used(code_id: int) -> None:
     conn = get_db()
+    _ensure_password_reset_table(conn)
     conn.execute('UPDATE password_reset_codes SET used = 1 WHERE id = ?', (code_id,))
     conn.commit()
     conn.close()
@@ -792,6 +824,7 @@ def mark_reset_code_used(code_id: int) -> None:
 def cleanup_expired_reset_codes() -> None:
     now = datetime.utcnow().isoformat()
     conn = get_db()
+    _ensure_password_reset_table(conn)
     conn.execute('DELETE FROM password_reset_codes WHERE expires_at < ?', (now,))
     conn.commit()
     conn.close()

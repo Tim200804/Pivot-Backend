@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
@@ -31,8 +31,7 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key')
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 7 * 24 * 60 * 60  # 7 days in seconds
 
-    # Cross-origin: frontend (codebuddy / GitHub Pages) and API (Railway) are different origins.
-    # Browsers enforce this; the API must emit Access-Control-* headers (cannot "disable SOP").
+    # Cross-origin: frontend (WorkBuddy / GitHub Pages) and API (Railway) are different origins.
     CORS(
         app,
         resources={r"/*": {
@@ -46,28 +45,18 @@ def create_app():
     )
     JWTManager(app)
 
-    # Belt-and-suspenders: always attach ACAO on API responses (including error paths)
+    # Echo concrete Origin when present so any SPA host works (WorkBuddy, codebuddy, etc.)
     @app.after_request
-    def add_cors_headers(response):
-        origin = None
-        try:
-            from flask import request as flask_request
-            origin = flask_request.headers.get('Origin')
-        except Exception:
-            origin = None
+    def _apply_cors_fallback(response):
+        origin = request.headers.get('Origin')
         if origin:
             response.headers['Access-Control-Allow-Origin'] = origin
             response.headers['Vary'] = 'Origin'
-        elif 'Access-Control-Allow-Origin' not in response.headers:
+        else:
             response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers.setdefault(
-            'Access-Control-Allow-Headers',
-            'Authorization, Content-Type, Accept, Origin, X-Requested-With',
-        )
-        response.headers.setdefault(
-            'Access-Control-Allow-Methods',
-            'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-        )
+
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With'
         return response
 
     # Routes

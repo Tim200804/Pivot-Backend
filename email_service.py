@@ -57,7 +57,7 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
 
     Env vars:
       RESEND_API_KEY  — required in production
-      EMAIL_FROM      — e.g. "Pivot <onboarding@resend.dev>" or your verified domain
+      EMAIL_FROM      — e.g. "Pivot <noreply@internmatch.blog>"
       EMAIL_FROM_NAME — optional display name if EMAIL_FROM is a bare address
 
     Without RESEND_API_KEY, logs the code (local/dev fallback) and returns True.
@@ -95,12 +95,12 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
                 'html': html_body,
                 'text': text_body,
             },
-            timeout=15,
+            timeout=10,
         )
         if resp.status_code >= 400:
             print(f'[Email] Resend error {resp.status_code} for {to_email}: {resp.text}')
             return False
         return True
-    except Exception as e:
-        print(f'[Email] Failed to send reset email to {to_email}: {e}')
+    except BaseException as e:
+        print(f'[Email] Failed to send reset email to {to_email}: {type(e).__name__}: {e}')
         return False

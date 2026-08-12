@@ -1,8 +1,5 @@
 import os
-import smtplib
 import random
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 
 def generate_reset_code() -> str:
@@ -13,18 +10,11 @@ def generate_reset_code() -> str:
 def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
     """Send a password reset email with the 6-digit verification code.
 
-    SMTP configuration is read from environment variables:
-      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
-      SMTP_FROM, SMTP_FROM_NAME
-
-    Falls back to printing the code in development if no SMTP is configured.
+    Uses Resend API (resend.com) when RESEND_API_KEY is configured.
+    Falls back to printing the code in development for easy testing.
     """
-    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-    port = int(os.environ.get('SMTP_PORT', 587))
-    user = os.environ.get('SMTP_USER')
-    password = os.environ.get('SMTP_PASSWORD')
-    from_addr = os.environ.get('SMTP_FROM', user or 'noreply@pivot-app.com')
-    from_name = os.environ.get('SMTP_FROM_NAME', 'Pivot')
+    resend_api_key = os.environ.get('RESEND_API_KEY')
+    from_addr = os.environ.get('EMAIL_FROM', 'Pivot <noreply@pivot-app.com>')
 
     greeting = f"Hi {user_name}," if user_name else "Hi,"
     subject = "Your Pivot Password Reset Code"
@@ -68,23 +58,40 @@ This code will expire in 15 minutes.
 If you didn't request a password reset, you can safely ignore this email.
 """
 
-    # Development fallback: return True if no SMTP configured
-    if not host or not password:
+    # ── Development fallback ──────────────────────────────────────────
+    if not resend_api_key:
+        print(f"\n[EMAIL FALLBACK] No RESEND_API_KEY configured. Reset code for {to_email}: {code}\n")
         return True
 
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = f"{from_name} <{from_addr}>"
-    msg['To'] = to_email
-    msg.attach(MIMEText(text_body, 'plain'))
-    msg.attach(MIMEText(html_body, 'html'))
-
+    # ── Resend API ────────────────────────────────────────────────────
     try:
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.starttls()
-            server.login(user, password)
-            server.sendmail(from_addr, [to_email], msg.as_string())
-        return True
-    except BaseException as e:
+        import requests
+
+        payload = {
+            "from": from_addr,
+            "to": [to_email],
+            "subject": subject,
+            "text": text_body,
+            "html": html_body,
+        }
+
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15,
+        )
+
+        if response.status_code in (200, 202):
+            print(f"[Email] Reset email sent to {to_email} via Resend (id: {response.json().get('id')})")
+            return True
+        else:
+            print(f"[Email] Resend API error: {response.status_code} {response.text}")
+            return False
+
+    except Exception as e:
         print(f"[Email] Failed to send reset email to {to_email}: {type(e).__name__}: {e}")
         return False

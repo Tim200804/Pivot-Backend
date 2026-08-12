@@ -306,8 +306,8 @@ def forgot_password():
         sent = send_reset_email(email, code, user.get('name'))
         if not sent:
             import os
-            if not os.environ.get('SMTP_HOST') and not os.environ.get('SMTP_PASSWORD'):
-                return jsonify({'success': True, 'message': 'SMTP not configured. Use this code for testing.', 'code': code})
+            if not os.environ.get('RESEND_API_KEY'):
+                return jsonify({'success': True, 'message': 'Email service not configured. Use this code for testing.', 'code': code})
             return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
 
         return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})

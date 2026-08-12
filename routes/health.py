@@ -220,3 +220,126 @@ def get_training_suggestion_route(user_id):
     days = min(int(request.args.get('days', 14)), 90)
     result = generate_training_adjustment_suggestion(user_id, days=days)
     return jsonify({'success': True, 'suggestion': result})
+
+
+@health_bp.route('/sync', methods=['POST'])
+@jwt_required()
+def sync_health_records():
+    """Bulk sync HealthKit records from the iOS companion app.
+
+    Request body:
+        {
+            "user_id": 8,
+            "records": [
+                {
+                    "metricType": "heart_rate",
+                    "value": 58,
+                    "unit": "bpm",
+                    "startDate": "2026-08-12T06:30:00.000+08:00",
+                    "endDate": "2026-08-12T06:31:00.000+08:00",
+                    "source": "Apple Watch"
+                },
+                ...
+            ]
+        }
+
+    Currently supported metricType values:
+        - heart_rate  -> aggregated as resting heart rate (rhr) per day
+        - sleep       -> aggregated as sleep_hours per day
+        - steps       -> stored as source notes (not a dedicated column yet)
+        - active_energy / distance -> ignored silently
+
+    Returns:
+        {"success": True, "synced": N, "message": "..."}
+    """
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+    if not user_id or not isinstance(user_id, int):
+        return jsonify({'success': False, 'message': 'user_id is required and must be an integer'}), 400
+
+    # Athletes can only sync their own data; coaches can sync for linked athletes.
+    if not _can_access_target(me, user_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    records = data.get('records') or []
+    if not isinstance(records, list):
+        return jsonify({'success': False, 'message': 'records must be an array'}), 400
+
+    from collections import defaultdict
+    from datetime import datetime as _dt
+
+    daily: dict[str, dict] = defaultdict(lambda: {
+        'hrv': None,
+        'rhr_values': [],
+        'sleep_seconds': 0.0,
+        'source': 'HealthKit',
+    })
+
+    parsed = 0
+    ignored = 0
+
+    for rec in records:
+        metric_type = (rec.get('metricType') or '').lower()
+        value = rec.get('value')
+        start = rec.get('startDate') or rec.get('start')
+
+        if value is None or metric_type not in {'heart_rate', 'sleep', 'steps', 'active_energy', 'distance'}:
+            ignored += 1
+            continue
+
+        # Normalize date from ISO-8601 string
+        try:
+            date_key = start[:10] if start and len(start) >= 10 else _dt.utcnow().isoformat()[:10]
+        except Exception:
+            date_key = _dt.utcnow().isoformat()[:10]
+
+        day = daily[date_key]
+
+        if metric_type == 'heart_rate':
+            day['rhr_values'].append(float(value))
+        elif metric_type == 'sleep':
+            # value is already in hours from iOS; convert back to seconds for aggregation
+            day['sleep_seconds'] += float(value) * 3600
+        elif metric_type == 'steps':
+            # Steps are not a dedicated column yet; keep in source for traceability.
+            day['source'] = f"HealthKit (steps: {int(value)})"
+        else:
+            ignored += 1
+
+        parsed += 1
+
+    synced = 0
+    for date_key, agg in daily.items():
+        rhr = None
+        if agg['rhr_values']:
+            rhr = round(sum(agg['rhr_values']) / len(agg['rhr_values']), 1)
+
+        sleep_hours = None
+        if agg['sleep_seconds'] > 0:
+            sleep_hours = round(agg['sleep_seconds'] / 3600, 1)
+
+        create_health_metric(user_id, {
+            'date': date_key,
+            'hrv': agg['hrv'],
+            'rhr': rhr,
+            'sleepHours': sleep_hours,
+            'sleepDeep': None,
+            'sleepREM': None,
+            'spo2': None,
+            'respiratoryRate': None,
+            'skinTemp': None,
+            'source': agg['source'],
+        })
+        synced += 1
+
+    return jsonify({
+        'success': True,
+        'synced': synced,
+        'parsed': parsed,
+        'ignored': ignored,
+        'message': f'Synced {synced} day(s) of health data for user {user_id}',
+    }), 201

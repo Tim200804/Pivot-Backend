@@ -414,7 +414,7 @@ def init_db():
             UNIQUE(user_id, date)
         )''')
 
-    _create_index_if_not_exists(conn, 'idx_checkins_user_date', 'checkins', 'user_id, date')
+    _create_index_if_not_exists(conn, 'idx_checkins_user_date_desc', 'checkins', 'user_id, date DESC')
 
     # ── health_metrics ──
     if is_mysql:
@@ -1054,11 +1054,16 @@ def get_checkin_by_id(checkin_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def list_checkins(user_id: int, limit: int = 90) -> list[dict]:
+def list_checkins(user_id: int, limit: int = 30, offset: int = 0, exclude_journal: bool = False) -> list[dict]:
     conn = get_db()
+    columns = (
+        'id, user_id, date, mood, motivation, fatigue, challenge, created_at'
+        if exclude_journal
+        else 'id, user_id, date, mood, motivation, fatigue, challenge, journal, created_at'
+    )
     rows = conn.execute(
-        'SELECT * FROM checkins WHERE user_id = ? ORDER BY date DESC LIMIT ?',
-        (user_id, limit)
+        f'SELECT {columns} FROM checkins WHERE user_id = ? ORDER BY date DESC LIMIT ? OFFSET ?',
+        (user_id, limit, offset)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

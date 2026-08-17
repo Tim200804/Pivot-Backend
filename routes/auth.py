@@ -2,8 +2,10 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
-from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
+from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, update_user_profile, user_to_public, list_coaches
+from models import list_athletes_for_coach, athlete_roster_to_public
 from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password, get_db
+from models import create_coach_athlete_link
 from email_service import generate_reset_code, send_reset_email
 from options import COACH_ROLES, ATHLETE_POSITIONS_BY_SPORT, SPORTS
 
@@ -172,32 +174,18 @@ def me():
 @auth_bp.route('/athletes', methods=['GET'])
 @jwt_required()
 def list_athletes():
-    """Return a lightweight directory of athletes (id + name + school) for
-    coaches who need to select a recipient for messages."""
-    from models import get_db
+    """Return the logged-in coach's linked roster with health summaries."""
     user_id = int(get_jwt_identity())
     user = get_user_by_id(user_id)
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     if user['role'] != 'coach':
         return jsonify({'success': False, 'message': 'Only coaches can list athletes'}), 403
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT id, name, school, sport, position FROM users WHERE role='athlete' ORDER BY name"
-    ).fetchall()
-    conn.close()
+
+    athletes = list_athletes_for_coach(user_id)
     return jsonify({
         'success': True,
-        'athletes': [
-            {
-                'id': r['id'],
-                'name': r['name'],
-                'school': r['school'],
-                'sport': r['sport'],
-                'position': r['position'],
-            }
-            for r in rows
-        ]
+        'athletes': [athlete_roster_to_public(a) for a in athletes],
     })
 
 
@@ -225,6 +213,68 @@ def list_coaches_route():
             for c in coaches
         ]
     })
+
+
+@auth_bp.route('/assign-athletes', methods=['POST'])
+@jwt_required()
+def assign_athletes_to_coach_route():
+    """Assign one or more athletes to a coach (idempotent)."""
+    me_id = int(get_jwt_identity())
+    me = get_user_by_id(me_id)
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if me['role'] != 'coach':
+        return jsonify({'success': False, 'message': 'Only coaches can assign athletes'}), 403
+
+    data = request.get_json(silent=True) or {}
+    athlete_ids = data.get('athleteIds')
+    coach_id = data.get('coachId')
+
+    if not isinstance(athlete_ids, list) or len(athlete_ids) == 0:
+        return jsonify({'success': False, 'message': 'athleteIds must be a non-empty list'}), 400
+    if not isinstance(coach_id, int):
+        return jsonify({'success': False, 'message': 'coachId is required'}), 400
+
+    target = get_user_by_id(coach_id)
+    if not target or target['role'] != 'coach':
+        return jsonify({'success': False, 'message': 'Target coach not found'}), 404
+
+    created = []
+    skipped = []
+    for athlete_id in athlete_ids:
+        if not isinstance(athlete_id, int):
+            continue
+        athlete = get_user_by_id(athlete_id)
+        if not athlete or athlete['role'] != 'athlete':
+            skipped.append({'id': athlete_id, 'reason': 'not an athlete'})
+            continue
+        try:
+            create_coach_athlete_link(coach_id, athlete_id, link_role='primary')
+            created.append(athlete_id)
+        except Exception as e:
+            skipped.append({'id': athlete_id, 'reason': str(e)})
+
+    return jsonify({
+        'success': True,
+        'message': f'Assigned {len(created)} athlete(s) to {target["name"]}',
+        'assigned': created,
+        'skipped': skipped,
+    })
+
+
+@auth_bp.route('/me', methods=['PATCH', 'PUT'])
+@jwt_required()
+def update_profile():
+    """Update the logged-in user's profile fields (name, school, team, etc.)."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    if not isinstance(data, dict) or not data:
+        return jsonify({'success': False, 'message': 'Profile fields required'}), 400
+
+    user = update_user_profile(user_id, data)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    return jsonify({'success': True, 'user': user_to_public(user)})
 
 
 @auth_bp.route('/me/preferences', methods=['PATCH', 'PUT'])
@@ -302,7 +352,15 @@ def forgot_password():
         code = generate_reset_code()
         create_reset_code(email, code)
 
-        if not send_reset_email(email, code, user.get('name')):
+        sent = send_reset_email(email, code, user.get('name'))
+        if not sent:
+            import os
+            if not os.environ.get('RESEND_API_KEY'):
+                return jsonify({
+                    'success': True,
+                    'message': 'Email service not configured. Use this code for testing.',
+                    'code': code,
+                })
             return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 502
 
         return jsonify({'success': True, 'message': ok_message})

@@ -11,17 +11,24 @@ checkins_bp = Blueprint('checkins', __name__, url_prefix='/api/checkins')
 @checkins_bp.route('', methods=['GET'])
 @jwt_required()
 def get_checkins():
-    """Return the current user's check-in history (newest first)."""
+    """Return the current user's check-in history (newest first), paginated."""
     user_id = int(get_jwt_identity())
     user = get_user_by_id(user_id)
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
 
-    limit = min(int(request.args.get('limit', 90)), 365)
-    rows = list_checkins(user_id, limit=limit)
+    limit = min(int(request.args.get('limit', 30)), 365)
+    offset = max(int(request.args.get('offset', 0)), 0)
+    exclude_journal = (request.args.get('fields') or '').strip().lower() == 'light'
+    rows = list_checkins(user_id, limit=limit, offset=offset, exclude_journal=exclude_journal)
     return jsonify({
         'success': True,
         'checkins': [checkin_to_public(r) for r in rows],
+        'pagination': {
+            'limit': limit,
+            'offset': offset,
+            'returned': len(rows),
+        },
     })
 
 

@@ -70,7 +70,6 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
     text_body, html_body = _build_email_bodies(code, user_name)
     subject = 'Your Pivot Password Reset Code'
 
-    # Local/dev fallback when Resend is not configured
     if not api_key:
         print(f"\n{'=' * 50}")
         print(f'[DEV] RESEND_API_KEY not set — password reset code for {to_email}: {code}')

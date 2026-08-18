@@ -31,29 +31,32 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key')
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 7 * 24 * 60 * 60  # 7 days in seconds
 
-    # Extensions — permissive CORS for all origins (API + SPA hosted separately)
-    CORS(app, resources={r"/*": {"origins": "*", "allow_headers": "*", "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]}})
+    # Cross-origin: frontend (WorkBuddy / GitHub Pages) and API (Railway) are different origins.
+    CORS(
+        app,
+        resources={r"/*": {
+            "origins": "*",
+            "allow_headers": ["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "expose_headers": ["Content-Type"],
+            "supports_credentials": False,
+            "max_age": 86400,
+        }},
+    )
     JWTManager(app)
 
-    # after_request fallback: echo the concrete Origin back when present so credentials
-    # work across any frontend domain (including CloudStudio previews). If no Origin
-    # header is sent, fall back to '*' to keep non-browser clients unblocked.
+    # Echo concrete Origin when present so any SPA host works (WorkBuddy, codebuddy, etc.)
     @app.after_request
     def _apply_cors_fallback(response):
         origin = request.headers.get('Origin')
         if origin:
             response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
         else:
             response.headers['Access-Control-Allow-Origin'] = '*'
 
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = '*'
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-
-        # Keep cache honest when multiple origins may hit the same URL
-        if origin:
-            response.headers['Vary'] = 'Origin'
-
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With'
         return response
 
     # Routes

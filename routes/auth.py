@@ -2,8 +2,8 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 import re
-import threading
-from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, user_to_public, list_coaches
+from models import create_user, get_user_by_email, get_user_by_id, update_user_preferences, update_user_profile, user_to_public, list_coaches
+from models import list_athletes_for_coach, athlete_roster_to_public
 from models import create_reset_code, get_valid_reset_code, mark_reset_code_used, update_user_password, get_db
 from models import create_coach_athlete_link
 from email_service import generate_reset_code, send_reset_email
@@ -174,32 +174,18 @@ def me():
 @auth_bp.route('/athletes', methods=['GET'])
 @jwt_required()
 def list_athletes():
-    """Return a lightweight directory of athletes (id + name + school) for
-    coaches who need to select a recipient for messages."""
-    from models import get_db
+    """Return the logged-in coach's linked roster with health summaries."""
     user_id = int(get_jwt_identity())
     user = get_user_by_id(user_id)
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     if user['role'] != 'coach':
         return jsonify({'success': False, 'message': 'Only coaches can list athletes'}), 403
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT id, name, school, sport, position FROM users WHERE role='athlete' ORDER BY name"
-    ).fetchall()
-    conn.close()
+
+    athletes = list_athletes_for_coach(user_id)
     return jsonify({
         'success': True,
-        'athletes': [
-            {
-                'id': r['id'],
-                'name': r['name'],
-                'school': r['school'],
-                'sport': r['sport'],
-                'position': r['position'],
-            }
-            for r in rows
-        ]
+        'athletes': [athlete_roster_to_public(a) for a in athletes],
     })
 
 
@@ -276,6 +262,21 @@ def assign_athletes_to_coach_route():
     })
 
 
+@auth_bp.route('/me', methods=['PATCH', 'PUT'])
+@jwt_required()
+def update_profile():
+    """Update the logged-in user's profile fields (name, school, team, etc.)."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    if not isinstance(data, dict) or not data:
+        return jsonify({'success': False, 'message': 'Profile fields required'}), 400
+
+    user = update_user_profile(user_id, data)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    return jsonify({'success': True, 'user': user_to_public(user)})
+
+
 @auth_bp.route('/me/preferences', methods=['PATCH', 'PUT'])
 @jwt_required()
 def update_preferences():
@@ -333,7 +334,7 @@ def init_reset_table():
 
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
-    """Send a 6-digit reset code to the user's email."""
+    """Generate a 6-digit reset code, store it, and email it via Resend."""
     try:
         data = request.get_json() or {}
         email = (data.get('email') or '').strip().lower()
@@ -344,9 +345,9 @@ def forgot_password():
             return jsonify({'success': False, 'message': 'Invalid email format'}), 400
 
         user = get_user_by_email(email)
+        ok_message = 'If an account exists, a reset code has been sent.'
         if not user:
-            # Don't reveal whether the email exists to prevent enumeration.
-            return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+            return jsonify({'success': True, 'message': ok_message})
 
         code = generate_reset_code()
         create_reset_code(email, code)
@@ -355,13 +356,17 @@ def forgot_password():
         if not sent:
             import os
             if not os.environ.get('RESEND_API_KEY'):
-                return jsonify({'success': True, 'message': 'Email service not configured. Use this code for testing.', 'code': code})
-            return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 500
+                return jsonify({
+                    'success': True,
+                    'message': 'Email service not configured. Use this code for testing.',
+                    'code': code,
+                })
+            return jsonify({'success': False, 'message': 'Failed to send reset email. Please try again later.'}), 502
 
-        return jsonify({'success': True, 'message': 'If an account exists, a reset code has been sent.'})
+        return jsonify({'success': True, 'message': ok_message})
     except Exception as e:
-        import traceback
-        return jsonify({'success': False, 'message': str(e), 'trace': traceback.format_exc()}), 500
+        print(f'[forgot-password] error: {type(e).__name__}: {e}')
+        return jsonify({'success': False, 'message': 'Unable to start password reset. Please try again.'}), 500
 
 
 @auth_bp.route('/verify-reset-code', methods=['POST'])

@@ -1,5 +1,6 @@
 import os
 import random
+import requests
 
 
 def generate_reset_code() -> str:
@@ -7,18 +8,8 @@ def generate_reset_code() -> str:
     return f"{random.randint(100000, 999999)}"
 
 
-def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
-    """Send a password reset email with the 6-digit verification code.
-
-    Uses Resend API (resend.com) when RESEND_API_KEY is configured.
-    Falls back to printing the code in development for easy testing.
-    """
-    resend_api_key = os.environ.get('RESEND_API_KEY')
-    from_addr = os.environ.get('EMAIL_FROM', 'Pivot <noreply@pivot-app.com>')
-
+def _build_email_bodies(code: str, user_name: str | None = None) -> tuple[str, str]:
     greeting = f"Hi {user_name}," if user_name else "Hi,"
-    subject = "Your Pivot Password Reset Code"
-
     html_body = f"""
     <html>
     <body style="font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, sans-serif; color: #1e293b; background: #f8fafc; padding: 40px 20px;">
@@ -46,7 +37,6 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
     </body>
     </html>
     """
-
     text_body = f"""{greeting}
 
 We received a request to reset your Pivot password.
@@ -57,41 +47,55 @@ This code will expire in 15 minutes.
 
 If you didn't request a password reset, you can safely ignore this email.
 """
+    return text_body, html_body
 
-    # ── Development fallback ──────────────────────────────────────────
-    if not resend_api_key:
-        print(f"\n[EMAIL FALLBACK] No RESEND_API_KEY configured. Reset code for {to_email}: {code}\n")
+
+DEFAULT_EMAIL_FROM = 'Pivot <noreply@internmatch.blog>'
+
+
+def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
+    """Send a password reset email via Resend HTTP API.
+
+    Railway blocks outbound SMTP; Resend uses HTTPS and works on Railway.
+
+    Env vars:
+      RESEND_API_KEY  — required in production
+      EMAIL_FROM      — optional override; defaults to Pivot <noreply@internmatch.blog>
+
+    Without RESEND_API_KEY, logs the code (local/dev fallback) and returns True.
+    """
+    api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
+    from_addr = (os.environ.get('EMAIL_FROM') or '').strip() or DEFAULT_EMAIL_FROM
+
+    text_body, html_body = _build_email_bodies(code, user_name)
+    subject = 'Your Pivot Password Reset Code'
+
+    if not api_key:
+        print(f"\n{'=' * 50}")
+        print(f'[DEV] RESEND_API_KEY not set — password reset code for {to_email}: {code}')
+        print(f"{'=' * 50}\n")
         return True
 
-    # ── Resend API ────────────────────────────────────────────────────
     try:
-        import requests
-
-        payload = {
-            "from": from_addr,
-            "to": [to_email],
-            "subject": subject,
-            "text": text_body,
-            "html": html_body,
-        }
-
-        response = requests.post(
-            "https://api.resend.com/emails",
+        resp = requests.post(
+            'https://api.resend.com/emails',
             headers={
-                "Authorization": f"Bearer {resend_api_key}",
-                "Content-Type": "application/json",
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
             },
-            json=payload,
-            timeout=15,
+            json={
+                'from': from_addr,
+                'to': [to_email],
+                'subject': subject,
+                'html': html_body,
+                'text': text_body,
+            },
+            timeout=10,
         )
-
-        if response.status_code in (200, 202):
-            print(f"[Email] Reset email sent to {to_email} via Resend (id: {response.json().get('id')})")
-            return True
-        else:
-            print(f"[Email] Resend API error: {response.status_code} {response.text}")
+        if resp.status_code >= 400:
+            print(f'[Email] Resend error {resp.status_code} for {to_email}: {resp.text}')
             return False
-
-    except Exception as e:
-        print(f"[Email] Failed to send reset email to {to_email}: {type(e).__name__}: {e}")
+        return True
+    except BaseException as e:
+        print(f'[Email] Failed to send reset email to {to_email}: {type(e).__name__}: {e}')
         return False

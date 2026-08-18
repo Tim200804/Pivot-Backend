@@ -700,6 +700,42 @@ def list_coaches(exclude_id: int | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def update_user_profile(user_id: int, data: dict) -> dict | None:
+    """Update editable profile fields for the current user."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+
+    field_map = {
+        'name': 'name',
+        'school': 'school',
+        'teamName': 'team_name',
+        'position': 'position',
+        'coachRole': 'coach_role',
+        'height': 'height',
+        'weight': 'weight',
+    }
+    updates = {}
+    for api_key, db_col in field_map.items():
+        if api_key in data:
+            updates[db_col] = data[api_key]
+
+    if not updates:
+        return user
+
+    now = datetime.utcnow().isoformat()
+    set_clause = ', '.join(f'{col} = ?' for col in updates)
+    values = list(updates.values()) + [now, user_id]
+    conn = get_db()
+    conn.execute(
+        f'UPDATE users SET {set_clause}, updated_at = ? WHERE id = ?',
+        values,
+    )
+    conn.commit()
+    conn.close()
+    return get_user_by_id(user_id)
+
+
 def update_user_preferences(user_id: int, prefs: dict) -> dict | None:
     now = datetime.utcnow().isoformat()
     conn = get_db()
@@ -1176,7 +1212,6 @@ def get_team_summary(coach_id: int) -> dict:
     summaries = []
     for athlete in athletes:
         user_id = athlete['id']
-        summary = get_latest_health_summary(user_id)
         # Aggregate recent training load (last 7 days)
         recent_training = list_training_metrics(user_id, limit=7)
         loads = []
@@ -1196,13 +1231,9 @@ def get_team_summary(coach_id: int) -> dict:
             'latestTrainingDate': latest_date,
             'highLoadDays': high_load_days,
         }
-        # Include 7-day health series for team trend charts (ascending by date)
-        recent_health = sorted(
-            list_health_metrics(user_id, limit=7),
-            key=lambda m: m['date'],
-        )
-        health_series = [health_metric_to_public(m) for m in recent_health]
-        summaries.append({**athlete, **summary, **training_summary, 'health': health_series})
+        # Build a frontend-compatible roster athlete with health trends
+        roster = athlete_roster_to_public(athlete, health_limit=7)
+        summaries.append({**roster, **training_summary})
 
     valid = [s for s in summaries if s.get('hrv') is not None]
     n = len(valid) or 1
@@ -1893,6 +1924,44 @@ def checkin_to_public(c: dict) -> dict:
         'challenge': c.get('challenge', 'none'),
         'journal': c.get('journal', ''),
         'createdAt': c['created_at'],
+    }
+
+
+def athlete_roster_to_public(athlete: dict, *, health_limit: int = 7) -> dict:
+    """Build a frontend-compatible roster athlete with health trends."""
+    user_id = athlete['id']
+    summary = get_latest_health_summary(user_id)
+    health_rows = list_health_metrics(user_id, limit=health_limit)
+    health_rows.reverse()
+    health = [health_metric_to_public(r) for r in health_rows]
+
+    hrv_values = [h['hrv'] for h in health if h.get('hrv') is not None]
+    recovering = False
+    if len(hrv_values) >= 3 and summary.get('status') in ('warning', 'good'):
+        recovering = hrv_values[-1] > hrv_values[0]
+
+    team_name = athlete.get('team_name') or athlete.get('teamName') or ''
+    return {
+        'id': user_id,
+        'name': athlete.get('name') or 'Athlete',
+        'email': athlete.get('email'),
+        'sport': athlete.get('sport') or 'Rowing',
+        'school': athlete.get('school') or '',
+        'team': team_name,
+        'teamName': team_name,
+        'position': athlete.get('position') or '',
+        'height': athlete.get('height') or 180,
+        'weight': athlete.get('weight') or 75,
+        'age': athlete.get('age') or 19,
+        'health': health,
+        'status': summary.get('status') or 'unknown',
+        'currentHRV': summary.get('hrv') if summary.get('hrv') is not None else 0,
+        'currentRHR': summary.get('rhr') if summary.get('rhr') is not None else 0,
+        'currentSleep': summary.get('sleepHours') if summary.get('sleepHours') is not None else 0,
+        'hrv': summary.get('hrv'),
+        'rhr': summary.get('rhr'),
+        'sleepHours': summary.get('sleepHours'),
+        'recovering': recovering,
     }
 
 

@@ -1196,7 +1196,13 @@ def get_team_summary(coach_id: int) -> dict:
             'latestTrainingDate': latest_date,
             'highLoadDays': high_load_days,
         }
-        summaries.append({**athlete, **summary, **training_summary})
+        # Include 7-day health series for team trend charts (ascending by date)
+        recent_health = sorted(
+            list_health_metrics(user_id, limit=7),
+            key=lambda m: m['date'],
+        )
+        health_series = [health_metric_to_public(m) for m in recent_health]
+        summaries.append({**athlete, **summary, **training_summary, 'health': health_series})
 
     valid = [s for s in summaries if s.get('hrv') is not None]
     n = len(valid) or 1

@@ -175,9 +175,10 @@ def get_athlete_dashboard():
         return jsonify({'success': False, 'message': 'Only athletes can view this dashboard'}), 403
 
     user_id = me['id']
-    health_rows = list_health_metrics(user_id, limit=180)
-    training_rows = list_training_metrics(user_id, limit=180)
-    checkin_rows = list_checkins(user_id, limit=90)
+    days = min(max(int(request.args.get('days', 7)), 1), 180)
+    health_rows = list_health_metrics(user_id, limit=days)
+    training_rows = list_training_metrics(user_id, limit=days)
+    checkin_rows = list_checkins(user_id, limit=min(days, 30), exclude_journal=True)
     alert_rows = list_alerts_for_user(user_id, status=None)
 
     # Build a frontend-compatible athlete profile

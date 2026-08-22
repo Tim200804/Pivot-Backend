@@ -605,6 +605,47 @@ def init_db():
     _create_index_if_not_exists(conn, 'idx_interventions_athlete', 'interventions', 'athlete_id')
     _create_index_if_not_exists(conn, 'idx_interventions_coach', 'interventions', 'coach_id')
 
+    # ── substitution_requests ──
+    if is_mysql:
+        conn.execute('''CREATE TABLE IF NOT EXISTS substitution_requests (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            requester_id INT NOT NULL,
+            substitute_id INT,
+            coach_id INT NOT NULL,
+            position VARCHAR(100) NOT NULL,
+            training_date VARCHAR(30) NOT NULL,
+            reason TEXT,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            coach_note TEXT,
+            created_at VARCHAR(30) NOT NULL,
+            updated_at VARCHAR(30) NOT NULL,
+            FOREIGN KEY (requester_id) REFERENCES users(id),
+            FOREIGN KEY (substitute_id) REFERENCES users(id),
+            FOREIGN KEY (coach_id) REFERENCES users(id)
+        )''')
+    else:
+        conn.execute('''CREATE TABLE IF NOT EXISTS substitution_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester_id INTEGER NOT NULL,
+            substitute_id INTEGER,
+            coach_id INTEGER NOT NULL,
+            position TEXT NOT NULL,
+            training_date TEXT NOT NULL,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            coach_note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (requester_id) REFERENCES users(id),
+            FOREIGN KEY (substitute_id) REFERENCES users(id),
+            FOREIGN KEY (coach_id) REFERENCES users(id)
+        )''')
+
+    _create_index_if_not_exists(conn, 'idx_substitutions_requester', 'substitution_requests', 'requester_id, created_at')
+    _create_index_if_not_exists(conn, 'idx_substitutions_substitute', 'substitution_requests', 'substitute_id, created_at')
+    _create_index_if_not_exists(conn, 'idx_substitutions_coach', 'substitution_requests', 'coach_id, created_at')
+    _create_index_if_not_exists(conn, 'idx_substitutions_status', 'substitution_requests', 'status')
+
     # ── password_reset_codes ──
     if is_mysql:
         conn.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
@@ -983,6 +1024,251 @@ def message_to_public(msg: dict, sender: dict = None) -> dict:
         'readAt': msg.get('read_at'),
         'createdAt': msg['created_at'],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Substitution Requests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+VALID_SUBSTITUTION_STATUSES = {
+    'pending_teammate', 'teammate_accepted', 'teammate_rejected',
+    'coach_approved', 'coach_rejected',
+}
+
+
+def _substitution_request_to_public(row: dict, requester=None, substitute=None, coach=None) -> dict:
+    return {
+        'id': row['id'],
+        'requesterId': row['requester_id'],
+        'requesterName': requester['name'] if requester else None,
+        'requesterPosition': requester['position'] if requester else None,
+        'substituteId': row['substitute_id'],
+        'substituteName': substitute['name'] if substitute else None,
+        'coachId': row['coach_id'],
+        'coachName': coach['name'] if coach else None,
+        'position': row['position'],
+        'trainingDate': row['training_date'],
+        'reason': row.get('reason') or '',
+        'status': row['status'],
+        'coachNote': row.get('coach_note') or '',
+        'createdAt': row['created_at'],
+        'updatedAt': row['updated_at'],
+    }
+
+
+def create_substitution_request(data: dict) -> dict:
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO substitution_requests
+            (requester_id, substitute_id, coach_id, position, training_date, reason, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data['requester_id'], data['substitute_id'], data['coach_id'],
+        data['position'], data['training_date'], data.get('reason', ''),
+        'pending_teammate', now, now,
+    ))
+    req_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return get_substitution_request(req_id)
+
+
+def get_substitution_request(req_id: int) -> dict | None:
+    conn = get_db()
+    row = conn.execute('SELECT * FROM substitution_requests WHERE id = ?', (req_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    row = dict(row)
+    requester = get_user_by_id(row['requester_id'])
+    substitute = get_user_by_id(row['substitute_id']) if row['substitute_id'] else None
+    coach = get_user_by_id(row['coach_id'])
+    return _substitution_request_to_public(row, requester, substitute, coach)
+
+
+def list_substitution_requests(user_id: int, role: str) -> list[dict]:
+    conn = get_db()
+    if role == 'coach':
+        rows = conn.execute(
+            'SELECT * FROM substitution_requests WHERE coach_id = ? ORDER BY created_at DESC',
+            (user_id,),
+        ).fetchall()
+    elif role == 'athlete':
+        rows = conn.execute(
+            'SELECT * FROM substitution_requests WHERE requester_id = ? OR substitute_id = ? ORDER BY created_at DESC',
+            (user_id, user_id),
+        ).fetchall()
+    else:
+        rows = []
+    conn.close()
+
+    result = []
+    for r in rows:
+        r = dict(r)
+        requester = get_user_by_id(r['requester_id'])
+        substitute = get_user_by_id(r['substitute_id']) if r['substitute_id'] else None
+        coach = get_user_by_id(r['coach_id'])
+        result.append(_substitution_request_to_public(r, requester, substitute, coach))
+    return result
+
+
+def find_available_substitutes(requester_id: int, position: str) -> list[dict]:
+    """Return athletes under the same coach with the same position, excluding the requester."""
+    conn = get_db()
+    coach_rows = conn.execute(
+        'SELECT coach_id FROM coach_athlete_links WHERE athlete_id = ?',
+        (requester_id,),
+    ).fetchall()
+    coach_ids = [r['coach_id'] for r in coach_rows]
+    if not coach_ids:
+        conn.close()
+        return []
+
+    placeholders = ','.join('?' * len(coach_ids))
+    sql = f'''
+        SELECT DISTINCT u.* FROM users u
+        JOIN coach_athlete_links l ON l.athlete_id = u.id
+        WHERE l.coach_id IN ({placeholders})
+          AND u.id != ?
+          AND u.role = 'athlete'
+          AND u.position = ?
+        ORDER BY u.name
+    '''
+    rows = conn.execute(sql, coach_ids + [requester_id, position]).fetchall()
+    conn.close()
+    return [user_to_public(dict(r)) for r in rows]
+
+
+def respond_to_substitution_request(req_id: int, substitute_id: int, accept: bool) -> dict | None:
+    req = get_substitution_request(req_id)
+    if not req or req['substituteId'] != substitute_id:
+        return None
+    if req['status'] != 'pending_teammate':
+        return None
+
+    new_status = 'teammate_accepted' if accept else 'teammate_rejected'
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        'UPDATE substitution_requests SET status = ?, updated_at = ? WHERE id = ?',
+        (new_status, now, req_id),
+    )
+    conn.commit()
+    conn.close()
+    return get_substitution_request(req_id)
+
+
+def coach_approve_substitution_request(req_id: int, coach_id: int, approve: bool, note: str = None) -> dict | None:
+    req = get_substitution_request(req_id)
+    if not req or req['coachId'] != coach_id:
+        return None
+    if req['status'] != 'teammate_accepted':
+        return None
+
+    new_status = 'coach_approved' if approve else 'coach_rejected'
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    if note is not None:
+        conn.execute(
+            'UPDATE substitution_requests SET status = ?, coach_note = ?, updated_at = ? WHERE id = ?',
+            (new_status, note, now, req_id),
+        )
+    else:
+        conn.execute(
+            'UPDATE substitution_requests SET status = ?, updated_at = ? WHERE id = ?',
+            (new_status, now, req_id),
+        )
+    conn.commit()
+    conn.close()
+    return get_substitution_request(req_id)
+
+
+def notify_substitution_event(req: dict, event: str) -> None:
+    """Send in-app messages about substitution status changes.
+
+    Events: created, teammate_accepted, teammate_rejected, coach_approved, coach_rejected.
+    """
+    requester_id = req['requesterId']
+    substitute_id = req.get('substituteId')
+    coach_id = req['coachId']
+    date = req['trainingDate']
+    position = req['position']
+    reason = req.get('reason', '')
+
+    requester = get_user_by_id(requester_id)
+    substitute = get_user_by_id(substitute_id) if substitute_id else None
+    substitute_name = substitute['name'] if substitute else 'a teammate'
+
+    if event == 'created':
+        if substitute_id:
+            create_message(
+                requester_id, substitute_id,
+                f"{requester['name']} is requesting a substitution for {position} on {date}. Reason: {reason}. Can you cover this training?",
+                subject=f'Substitution request for {date}',
+                alert_type='substitution',
+            )
+        create_message(
+            requester_id, coach_id,
+            f"{requester['name']} requested a substitution for {position} on {date}. Waiting for {substitute_name} to respond.",
+            subject=f'Substitution request from {requester['name']}',
+            alert_type='substitution',
+        )
+    elif event == 'teammate_accepted':
+        create_message(
+            substitute_id, requester_id,
+            f"{substitute_name} accepted your substitution request for {date}. Waiting for coach approval.",
+            subject='Substitution accepted by teammate',
+            alert_type='substitution',
+        )
+        create_message(
+            substitute_id, coach_id,
+            f"{substitute_name} accepted covering {position} for {requester['name']} on {date}. Please approve or reject.",
+            subject='Substitution awaiting coach approval',
+            alert_type='substitution',
+        )
+    elif event == 'teammate_rejected':
+        create_message(
+            substitute_id, requester_id,
+            f"{substitute_name} declined your substitution request for {date}. Please contact your coach.",
+            subject='Substitution declined',
+            alert_type='substitution',
+        )
+        create_message(
+            substitute_id, coach_id,
+            f"{substitute_name} declined covering {position} for {requester['name']} on {date}.",
+            subject='Substitution declined',
+            alert_type='substitution',
+        )
+    elif event == 'coach_approved':
+        create_message(
+            coach_id, requester_id,
+            f"Coach approved your substitution for {date}. {substitute_name} will cover your {position} spot.",
+            subject='Substitution approved',
+            alert_type='substitution',
+        )
+        if substitute_id:
+            create_message(
+                coach_id, substitute_id,
+                f"Coach approved. You are confirmed to cover {position} for {requester['name']} on {date}.",
+                subject='Substitution confirmed',
+                alert_type='substitution',
+            )
+    elif event == 'coach_rejected':
+        create_message(
+            coach_id, requester_id,
+            f"Coach did not approve your substitution for {date}. You are expected to attend training.",
+            subject='Substitution not approved',
+            alert_type='substitution',
+        )
+        if substitute_id:
+            create_message(
+                coach_id, substitute_id,
+                f"Coach did not approve the substitution. You are not required to cover {position} on {date}.",
+                subject='Substitution not approved',
+                alert_type='substitution',
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

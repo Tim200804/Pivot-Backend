@@ -98,16 +98,15 @@ def register():
     if sport not in SPORTS:
         return jsonify({'success': False, 'message': f'Sport must be one of: {", ".join(SPORTS)}'}), 400
 
-    # Validate coach role / athlete position against server-side whitelist
+    # Validate coach role / athlete position
     if data['role'] == 'coach':
         coach_role = (data.get('coachRole') or '').strip()
         if coach_role not in COACH_ROLES:
             return jsonify({'success': False, 'message': 'Invalid coach role'}), 400
     else:  # athlete
         position = (data.get('position') or '').strip()
-        valid_positions = ATHLETE_POSITIONS_BY_SPORT.get(sport, [])
-        if position not in valid_positions:
-            return jsonify({'success': False, 'message': 'Invalid position for selected sport'}), 400
+        if not position:
+            return jsonify({'success': False, 'message': 'Position is required'}), 400
 
     if get_user_by_email(email):
         return jsonify({'success': False, 'message': 'Email already registered'}), 409

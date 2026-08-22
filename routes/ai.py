@@ -332,3 +332,35 @@ def ai_low_period_support():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
+
+
+def generate_substitution_support_text(athlete: dict, checkin: dict, earliest_rest_date: str) -> str | None:
+    """Generate an encouraging message for an athlete who cannot be substituted."""
+    try:
+        _get_client()
+    except Exception:
+        return None
+
+    data_summary = _build_data_summary({'athlete': athlete, 'checkin': checkin})
+    prompt = (
+        f"{data_summary}\n\n"
+        "## Your task:\n"
+        f"The athlete is not recovering well enough to skip a mandatory team training session today, but they still need to attend. "
+        f"Encourage them and let them know they can plan to rest as early as {earliest_rest_date}. "
+        "Write a short, warm, supportive message (2-4 sentences) acknowledging their current metrics, encouraging them to get through today's team session safely, and clearly stating the earliest date they can expect to rest. "
+        "Be realistic, caring, and psychologically safe. Keep it under 80 words."
+    )
+
+    try:
+        completion = _create_completion(
+            model='kimi-k2.6',
+            messages=[
+                {'role': 'system', 'content': _build_system_prompt()},
+                {'role': 'user', 'content': prompt},
+            ],
+            max_tokens=300,
+        )
+        return (completion.choices[0].message.content or '').strip()
+    except Exception:
+        traceback.print_exc()
+        return None

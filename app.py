@@ -22,6 +22,7 @@ from routes.checkins import checkins_bp
 from routes.health import health_bp
 from routes.alerts import alerts_bp
 from routes.interventions import interventions_bp
+from routes.substitutions import substitutions_bp
 
 
 def create_app():
@@ -68,6 +69,7 @@ def create_app():
     app.register_blueprint(health_bp)
     app.register_blueprint(alerts_bp)
     app.register_blueprint(interventions_bp)
+    app.register_blueprint(substitutions_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])
@@ -87,6 +89,7 @@ def create_app():
             stats['checkins'] = _count('checkins')
             stats['messages'] = _count('messages')
             stats['interventions'] = _count('interventions')
+            stats['substitution_requests'] = _count('substitution_requests')
             stats['coach_athlete_links'] = _count('coach_athlete_links')
             conn.close()
         except Exception as e:

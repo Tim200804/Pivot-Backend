@@ -616,6 +616,7 @@ def init_db():
             training_date VARCHAR(30) NOT NULL,
             reason TEXT,
             status VARCHAR(50) NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            response_note TEXT,
             coach_note TEXT,
             created_at VARCHAR(30) NOT NULL,
             updated_at VARCHAR(30) NOT NULL,
@@ -633,6 +634,7 @@ def init_db():
             training_date TEXT NOT NULL,
             reason TEXT,
             status TEXT NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            response_note TEXT,
             coach_note TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -645,6 +647,10 @@ def init_db():
     _create_index_if_not_exists(conn, 'idx_substitutions_substitute', 'substitution_requests', 'substitute_id, created_at')
     _create_index_if_not_exists(conn, 'idx_substitutions_coach', 'substitution_requests', 'coach_id, created_at')
     _create_index_if_not_exists(conn, 'idx_substitutions_status', 'substitution_requests', 'status')
+
+    # Migration: add response_note for teammate accept/decline reason
+    if not _table_has_column(conn, 'substitution_requests', 'response_note'):
+        conn.execute('ALTER TABLE substitution_requests ADD COLUMN response_note TEXT')
 
     # ── password_reset_codes ──
     if is_mysql:
@@ -1050,6 +1056,7 @@ def _substitution_request_to_public(row: dict, requester=None, substitute=None, 
         'trainingDate': row['training_date'],
         'reason': row.get('reason') or '',
         'status': row['status'],
+        'responseNote': row.get('response_note') or '',
         'coachNote': row.get('coach_note') or '',
         'createdAt': row['created_at'],
         'updatedAt': row['updated_at'],
@@ -1141,7 +1148,7 @@ def find_available_substitutes(requester_id: int, position: str) -> list[dict]:
     return [user_to_public(dict(r)) for r in rows]
 
 
-def respond_to_substitution_request(req_id: int, substitute_id: int, accept: bool) -> dict | None:
+def respond_to_substitution_request(req_id: int, substitute_id: int, accept: bool, response_note: str = None) -> dict | None:
     req = get_substitution_request(req_id)
     if not req or req['substituteId'] != substitute_id:
         return None
@@ -1152,8 +1159,8 @@ def respond_to_substitution_request(req_id: int, substitute_id: int, accept: boo
     now = datetime.utcnow().isoformat()
     conn = get_db()
     conn.execute(
-        'UPDATE substitution_requests SET status = ?, updated_at = ? WHERE id = ?',
-        (new_status, now, req_id),
+        'UPDATE substitution_requests SET status = ?, response_note = ?, updated_at = ? WHERE id = ?',
+        (new_status, (response_note or '').strip(), now, req_id),
     )
     conn.commit()
     conn.close()

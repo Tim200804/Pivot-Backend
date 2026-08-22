@@ -158,8 +158,9 @@ def respond(req_id):
 
     data = request.get_json() or {}
     accept = bool(data.get('accept'))
+    note = (data.get('note') or '').strip() or None
 
-    req = respond_to_substitution_request(req_id, user_id, accept)
+    req = respond_to_substitution_request(req_id, user_id, accept, note)
     if not req:
         return jsonify({'success': False, 'message': 'Request not found or cannot be responded to'}), 400
 

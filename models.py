@@ -231,6 +231,48 @@ def _create_index_if_not_exists(conn: DBConnection, name: str, table: str, colum
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({columns})")
 
 
+def _migrate_substitution_constraints(conn: DBConnection):
+    """Recreate CHECK constraints on substitution_requests to match current code.
+
+    The table may have been created with an older status list; this migration
+    drops any existing CHECK constraints and recreates them with the full set
+    of values used by the application.
+    """
+    valid_statuses = (
+        'pending_teammate', 'teammate_accepted', 'teammate_rejected',
+        'pending_requester', 'requester_approved', 'pending_coach',
+        'coach_approved', 'coach_rejected',
+    )
+    valid_initiated_by = ('athlete', 'coach')
+
+    if conn._is_mysql:
+        cur = conn.execute(
+            """SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+               WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_NAME = 'substitution_requests'
+                 AND CONSTRAINT_TYPE = 'CHECK'"""
+        )
+        constraints = [r['CONSTRAINT_NAME'] for r in cur.fetchall()]
+        for cname in constraints:
+            try:
+                conn.execute(f"ALTER TABLE substitution_requests DROP CHECK {cname}")
+            except Exception:
+                pass
+        status_list = ', '.join(f"'{s}'" for s in valid_statuses)
+        initiated_list = ', '.join(f"'{v}'" for v in valid_initiated_by)
+        conn.execute(
+            f"""ALTER TABLE substitution_requests
+                ADD CONSTRAINT chk_substitution_status
+                  CHECK (status IN ({status_list})),
+                ADD CONSTRAINT chk_substitution_initiated_by
+                  CHECK (initiated_by IN ({initiated_list}))"""
+        )
+    else:
+        # SQLite CHECK constraints cannot be altered in place. We rely on the
+        # Python layer to enforce valid values; existing rows are unaffected.
+        pass
+
+
 def _upsert_sql(table: str, columns: list, unique_cols: list, updates: list, is_mysql: bool) -> str:
     placeholders = ', '.join(['?'] * len(columns))
     cols = ', '.join(columns)
@@ -667,6 +709,11 @@ def init_db():
             conn.execute("ALTER TABLE substitution_requests ADD COLUMN initiated_by VARCHAR(20) NOT NULL DEFAULT 'athlete'")
         else:
             conn.execute("ALTER TABLE substitution_requests ADD COLUMN initiated_by TEXT NOT NULL DEFAULT 'athlete'")
+
+    # Migration: ensure CHECK constraints include all current status/initiated_by values.
+    # Old deployments may still have the original constraint set that does not include
+    # pending_requester / requester_approved / pending_coach.
+    _migrate_substitution_constraints(conn)
 
     # ── password_reset_codes ──
     if is_mysql:

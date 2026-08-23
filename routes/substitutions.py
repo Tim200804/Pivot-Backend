@@ -234,9 +234,9 @@ def coach_initiate():
     if not athlete or athlete['role'] != 'athlete':
         return jsonify({'success': False, 'message': 'Athlete not found'}), 404
 
-    # Verify athlete is linked to this coach
+    # Verify athlete is linked to this coach (compare int IDs)
     coach_athletes = list_athletes_for_coach(user_id)
-    if athlete_id not in {a['id'] for a in coach_athletes}:
+    if athlete['id'] not in {a['id'] for a in coach_athletes}:
         return jsonify({'success': False, 'message': 'Athlete is not on your roster'}), 403
 
     position = (athlete.get('position') or '').strip()

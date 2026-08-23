@@ -221,7 +221,7 @@ def coach_initiate():
         return jsonify({'success': False, 'message': 'Only coaches can initiate substitutions'}), 403
 
     data = request.get_json() or {}
-    athlete_id = int(data.get('athleteId')) if data.get('athleteId') else None
+    athlete_id = data.get('athleteId')
     substitute_id = data.get('substituteId')
     training_date = _format_date(data.get('trainingDate'))
     reason = (data.get('reason') or 'Coach initiated substitution').strip()
@@ -230,7 +230,7 @@ def coach_initiate():
     if not athlete_id or not training_date:
         return jsonify({'success': False, 'message': 'athleteId and trainingDate are required'}), 400
 
-    athlete = get_user_by_id(athlete_id)
+    athlete = get_user_by_id(int(athlete_id))
     if not athlete or athlete['role'] != 'athlete':
         return jsonify({'success': False, 'message': 'Athlete not found'}), 404
 

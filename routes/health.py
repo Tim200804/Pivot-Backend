@@ -223,6 +223,69 @@ def get_training_suggestion_route(user_id):
     return jsonify({'success': True, 'suggestion': result})
 
 
+@health_bp.route('/import', methods=['POST'])
+@jwt_required()
+def import_health_metrics():
+    """Bulk import daily health metrics from a spreadsheet (date/hrv/rhr/sleepHours).
+
+    Athletes may import for themselves; coaches may import for linked athletes.
+    Existing entries for the same (user_id, date) are overwritten.
+
+    Request body:
+        {
+            "user_id": 8,                 // optional, defaults to current user
+            "rows": [
+                {"date": "2026-08-22", "hrv": 58, "rhr": 54, "sleepHours": 7.2},
+                ...
+            ]
+        }
+    """
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    target_id = data.get('user_id') or me['id']
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'user_id must be an integer'}), 400
+
+    if not _can_access_target(me, target_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    rows = data.get('rows') or []
+    if not isinstance(rows, list):
+        return jsonify({'success': False, 'message': 'rows must be an array'}), 400
+
+    imported = 0
+    errors = []
+    for idx, row in enumerate(rows):
+        date = row.get('date')
+        if not date:
+            errors.append(f'Row {idx + 1}: missing date')
+            continue
+        try:
+            metric = create_health_metric(target_id, {
+                'date': date,
+                'hrv': float(row.get('hrv')) if row.get('hrv') is not None else None,
+                'rhr': float(row.get('rhr')) if row.get('rhr') is not None else None,
+                'sleepHours': float(row.get('sleepHours')) if row.get('sleepHours') is not None else None,
+                'source': 'import',
+            })
+            if metric:
+                imported += 1
+        except Exception as e:
+            errors.append(f'Row {idx + 1}: {str(e)}')
+
+    return jsonify({
+        'success': imported > 0 and not errors,
+        'imported': imported,
+        'errors': errors,
+        'message': f'Imported {imported} row(s)' + (f'; {len(errors)} error(s)' if errors else ''),
+    }), 201 if imported > 0 else 400
+
+
 @health_bp.route('/sync', methods=['POST'])
 @jwt_required()
 def sync_health_records():

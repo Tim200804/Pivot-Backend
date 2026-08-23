@@ -6,7 +6,8 @@ from models import (
     get_user_by_id, list_coaches_for_athlete, list_athletes_for_coach,
     create_substitution_request, get_substitution_request,
     list_substitution_requests, find_available_substitutes,
-    respond_to_substitution_request, coach_approve_substitution_request,
+    respond_to_substitution_request, requester_respond_to_substitution_request,
+    coach_approve_substitution_request,
     notify_substitution_event, create_message,
     list_health_metrics, get_latest_health_summary,
 )
@@ -53,6 +54,7 @@ def create_request():
     training_date = _format_date(data.get('trainingDate'))
     reason = (data.get('reason') or '').strip()
     substitute_id = data.get('substituteId')
+    needs_substitute = bool(data.get('needsSubstitute', True))
 
     if not training_date:
         return jsonify({'success': False, 'message': 'trainingDate is required'}), 400
@@ -66,25 +68,28 @@ def create_request():
         return jsonify({'success': False, 'message': 'No coach assigned'}), 400
     coach_id = coaches[0]['id']
 
-    candidates = find_available_substitutes(user_id, position)
-    if not candidates:
-        return jsonify({
-            'success': False,
-            'message': 'No substitute available for your position. Please contact your coach directly.',
-            'noSubstitute': True,
-        }), 409
+    if needs_substitute:
+        candidates = find_available_substitutes(user_id, position)
+        if not candidates:
+            return jsonify({
+                'success': False,
+                'message': 'No substitute available for your position. Please contact your coach directly.',
+                'noSubstitute': True,
+            }), 409
 
-    candidate_ids = {c['id'] for c in candidates}
-    if not substitute_id or int(substitute_id) not in candidate_ids:
-        return jsonify({'success': False, 'message': 'Selected substitute is not available for this position'}), 400
+        candidate_ids = {c['id'] for c in candidates}
+        if not substitute_id or int(substitute_id) not in candidate_ids:
+            return jsonify({'success': False, 'message': 'Selected substitute is not available for this position'}), 400
 
     req = create_substitution_request({
         'requester_id': user_id,
-        'substitute_id': int(substitute_id),
+        'substitute_id': int(substitute_id) if substitute_id else None,
         'coach_id': coach_id,
         'position': position,
         'training_date': training_date,
         'reason': reason,
+        'needs_substitute': needs_substitute,
+        'initiated_by': 'athlete',
     })
     notify_substitution_event(req, 'created')
     return jsonify({'success': True, 'request': req}), 201
@@ -151,6 +156,7 @@ def coach_candidates():
 @substitutions_bp.route('/<int:req_id>/respond', methods=['POST'])
 @jwt_required()
 def respond(req_id):
+    """Teammate (substitute) accepts or declines a substitution request."""
     user_id = int(get_jwt_identity())
     user = get_user_by_id(user_id)
     if not user or user['role'] != 'athlete':
@@ -164,7 +170,26 @@ def respond(req_id):
     if not req:
         return jsonify({'success': False, 'message': 'Request not found or cannot be responded to'}), 400
 
-    notify_substitution_event(req, 'teammate_accepted' if accept else 'teammate_rejected')
+    return jsonify({'success': True, 'request': req})
+
+
+@substitutions_bp.route('/<int:req_id>/requester-respond', methods=['POST'])
+@jwt_required()
+def requester_respond(req_id):
+    """The original athlete confirms or rejects a coach-initiated substitution arrangement."""
+    user_id = int(get_jwt_identity())
+    user = get_user_by_id(user_id)
+    if not user or user['role'] != 'athlete':
+        return jsonify({'success': False, 'message': 'Only athletes can respond'}), 403
+
+    data = request.get_json() or {}
+    accept = bool(data.get('accept'))
+    note = (data.get('note') or '').strip() or None
+
+    req = requester_respond_to_substitution_request(req_id, user_id, accept, note)
+    if not req:
+        return jsonify({'success': False, 'message': 'Request not found or cannot be responded to'}), 400
+
     return jsonify({'success': True, 'request': req})
 
 
@@ -182,9 +207,8 @@ def coach_approve(req_id):
 
     req = coach_approve_substitution_request(req_id, user_id, approve, note)
     if not req:
-        return jsonify({'success': False, 'message': 'Request not found or teammate has not accepted yet'}), 400
+        return jsonify({'success': False, 'message': 'Request not found or not ready for coach approval'}), 400
 
-    notify_substitution_event(req, 'coach_approved' if approve else 'coach_rejected')
     return jsonify({'success': True, 'request': req})
 
 
@@ -201,6 +225,7 @@ def coach_initiate():
     substitute_id = data.get('substituteId')
     training_date = _format_date(data.get('trainingDate'))
     reason = (data.get('reason') or 'Coach initiated substitution').strip()
+    needs_substitute = bool(data.get('needsSubstitute', True))
 
     if not athlete_id or not training_date:
         return jsonify({'success': False, 'message': 'athleteId and trainingDate are required'}), 400
@@ -218,25 +243,28 @@ def coach_initiate():
     if not position:
         return jsonify({'success': False, 'message': 'Athlete has no position set'}), 400
 
-    candidates = find_available_substitutes(athlete_id, position)
-    if not candidates:
-        return jsonify({
-            'success': False,
-            'message': 'No substitute available for this position',
-            'noSubstitute': True,
-        }), 409
+    if needs_substitute:
+        candidates = find_available_substitutes(athlete_id, position)
+        if not candidates:
+            return jsonify({
+                'success': False,
+                'message': 'No substitute available for this position',
+                'noSubstitute': True,
+            }), 409
 
-    candidate_ids = {c['id'] for c in candidates}
-    if not substitute_id or int(substitute_id) not in candidate_ids:
-        return jsonify({'success': False, 'message': 'Selected substitute is not available for this position'}), 400
+        candidate_ids = {c['id'] for c in candidates}
+        if not substitute_id or int(substitute_id) not in candidate_ids:
+            return jsonify({'success': False, 'message': 'Selected substitute is not available for this position'}), 400
 
     req = create_substitution_request({
         'requester_id': athlete_id,
-        'substitute_id': int(substitute_id),
+        'substitute_id': int(substitute_id) if substitute_id else None,
         'coach_id': user_id,
         'position': position,
         'training_date': training_date,
         'reason': reason,
+        'needs_substitute': needs_substitute,
+        'initiated_by': 'coach',
     })
     notify_substitution_event(req, 'created')
     return jsonify({'success': True, 'request': req}), 201

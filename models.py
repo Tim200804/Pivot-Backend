@@ -615,7 +615,9 @@ def init_db():
             position VARCHAR(100) NOT NULL,
             training_date VARCHAR(30) NOT NULL,
             reason TEXT,
-            status VARCHAR(50) NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            needs_substitute INT NOT NULL DEFAULT 1,
+            initiated_by VARCHAR(20) NOT NULL DEFAULT 'athlete' CHECK(initiated_by IN ('athlete', 'coach')),
+            status VARCHAR(50) NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'pending_requester', 'requester_approved', 'pending_coach', 'coach_approved', 'coach_rejected')),
             response_note TEXT,
             coach_note TEXT,
             created_at VARCHAR(30) NOT NULL,
@@ -633,7 +635,9 @@ def init_db():
             position TEXT NOT NULL,
             training_date TEXT NOT NULL,
             reason TEXT,
-            status TEXT NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'coach_approved', 'coach_rejected')),
+            needs_substitute INTEGER NOT NULL DEFAULT 1,
+            initiated_by TEXT NOT NULL DEFAULT 'athlete' CHECK(initiated_by IN ('athlete', 'coach')),
+            status TEXT NOT NULL DEFAULT 'pending_teammate' CHECK(status IN ('pending_teammate', 'teammate_accepted', 'teammate_rejected', 'pending_requester', 'requester_approved', 'pending_coach', 'coach_approved', 'coach_rejected')),
             response_note TEXT,
             coach_note TEXT,
             created_at TEXT NOT NULL,
@@ -651,6 +655,18 @@ def init_db():
     # Migration: add response_note for teammate accept/decline reason
     if not _table_has_column(conn, 'substitution_requests', 'response_note'):
         conn.execute('ALTER TABLE substitution_requests ADD COLUMN response_note TEXT')
+
+    # Migration: add needs_substitute and initiated_by for no-substitute flows
+    if not _table_has_column(conn, 'substitution_requests', 'needs_substitute'):
+        if is_mysql:
+            conn.execute("ALTER TABLE substitution_requests ADD COLUMN needs_substitute INT NOT NULL DEFAULT 1")
+        else:
+            conn.execute("ALTER TABLE substitution_requests ADD COLUMN needs_substitute INTEGER NOT NULL DEFAULT 1")
+    if not _table_has_column(conn, 'substitution_requests', 'initiated_by'):
+        if is_mysql:
+            conn.execute("ALTER TABLE substitution_requests ADD COLUMN initiated_by VARCHAR(20) NOT NULL DEFAULT 'athlete'")
+        else:
+            conn.execute("ALTER TABLE substitution_requests ADD COLUMN initiated_by TEXT NOT NULL DEFAULT 'athlete'")
 
     # ── password_reset_codes ──
     if is_mysql:
@@ -1039,6 +1055,8 @@ def message_to_public(msg: dict, sender: dict = None) -> dict:
 
 VALID_SUBSTITUTION_STATUSES = {
     'pending_teammate', 'teammate_accepted', 'teammate_rejected',
+    'pending_requester', 'requester_approved',
+    'pending_coach',
     'coach_approved', 'coach_rejected',
 }
 
@@ -1056,6 +1074,8 @@ def _substitution_request_to_public(row: dict, requester=None, substitute=None, 
         'position': row['position'],
         'trainingDate': row['training_date'],
         'reason': row.get('reason') or '',
+        'needsSubstitute': bool(row.get('needs_substitute', 1)),
+        'initiatedBy': row.get('initiated_by', 'athlete'),
         'status': row['status'],
         'responseNote': row.get('response_note') or '',
         'coachNote': row.get('coach_note') or '',
@@ -1066,16 +1086,25 @@ def _substitution_request_to_public(row: dict, requester=None, substitute=None, 
 
 def create_substitution_request(data: dict) -> dict:
     now = datetime.utcnow().isoformat()
+    needs_substitute = bool(data.get('needs_substitute', True))
+    initiated_by = data.get('initiated_by', 'athlete')
+
+    if needs_substitute:
+        initial_status = 'pending_teammate' if initiated_by == 'athlete' else 'pending_requester'
+    else:
+        initial_status = 'pending_coach'
+
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO substitution_requests
-            (requester_id, substitute_id, coach_id, position, training_date, reason, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (requester_id, substitute_id, coach_id, position, training_date, reason,
+             needs_substitute, initiated_by, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         data['requester_id'], data['substitute_id'], data['coach_id'],
         data['position'], data['training_date'], data.get('reason', ''),
-        'pending_teammate', now, now,
+        1 if needs_substitute else 0, initiated_by, initial_status, now, now,
     ))
     req_id = cursor.lastrowid
     conn.commit()
@@ -1156,7 +1185,12 @@ def respond_to_substitution_request(req_id: int, substitute_id: int, accept: boo
     if req['status'] != 'pending_teammate':
         return None
 
-    new_status = 'teammate_accepted' if accept else 'teammate_rejected'
+    if accept:
+        # Coach-initiated requests need the original athlete's final okay after teammate accepts.
+        new_status = 'pending_requester' if req.get('initiatedBy') == 'coach' else 'teammate_accepted'
+    else:
+        new_status = 'teammate_rejected'
+
     now = datetime.utcnow().isoformat()
     conn = get_db()
     conn.execute(
@@ -1168,11 +1202,37 @@ def respond_to_substitution_request(req_id: int, substitute_id: int, accept: boo
     return get_substitution_request(req_id)
 
 
+def requester_respond_to_substitution_request(req_id: int, requester_id: int, accept: bool, note: str = None) -> dict | None:
+    """The original athlete (requester) confirms/rejects a coach-initiated substitution arrangement."""
+    req = get_substitution_request(req_id)
+    if not req or req['requesterId'] != requester_id:
+        return None
+    if req['status'] != 'pending_requester':
+        return None
+
+    if not accept:
+        new_status = 'coach_rejected'
+    elif req.get('needsSubstitute'):
+        new_status = 'pending_teammate'
+    else:
+        new_status = 'pending_coach'
+
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        'UPDATE substitution_requests SET status = ?, response_note = ?, updated_at = ? WHERE id = ?',
+        (new_status, (note or '').strip(), now, req_id),
+    )
+    conn.commit()
+    conn.close()
+    return get_substitution_request(req_id)
+
+
 def coach_approve_substitution_request(req_id: int, coach_id: int, approve: bool, note: str = None) -> dict | None:
     req = get_substitution_request(req_id)
     if not req or req['coachId'] != coach_id:
         return None
-    if req['status'] != 'teammate_accepted':
+    if req['status'] not in ('teammate_accepted', 'pending_coach'):
         return None
 
     new_status = 'coach_approved' if approve else 'coach_rejected'
@@ -1198,8 +1258,41 @@ def notify_substitution_event(req: dict, event: str) -> None:
 
     They are intentionally NOT converted into Messages entries, because the
     Messages tab is reserved for direct coach-athlete communication.
+
+    The one exception: when a coach initiates a substitution, the original
+    athlete must be notified directly so they can confirm or reject the
+    arrangement. That message appears in both the Messages tab and the
+    Substitution tab.
     """
-    pass
+    if event != 'created':
+        return
+    if req.get('initiatedBy') != 'coach':
+        return
+
+    coach = get_user_by_id(req['coachId'])
+    requester = get_user_by_id(req['requesterId'])
+    if not coach or not requester:
+        return
+
+    sub_name = req.get('substituteName') or 'a teammate'
+    if req.get('needsSubstitute'):
+        body = (
+            f"{coach['name']} has arranged a substitution for your {req['position']} spot on "
+            f"{req['trainingDate']} with {sub_name}. Please review and confirm in the Substitution tab."
+        )
+    else:
+        body = (
+            f"{coach['name']} has marked you as not requiring a substitute for {req['position']} on "
+            f"{req['trainingDate']}. Please review and confirm in the Substitution tab."
+        )
+
+    create_message(
+        sender_id=coach['id'],
+        recipient_id=requester['id'],
+        body=body,
+        subject='Substitution arrangement needs your confirmation',
+        alert_type='coach_note',
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

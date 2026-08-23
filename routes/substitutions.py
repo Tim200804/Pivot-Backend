@@ -292,6 +292,6 @@ def coach_message():
         recipient_id=athlete['id'],
         body=text,
         subject='A note from your coach',
-        alert_type='substitution',
+        alert_type='coach_note',
     )
     return jsonify({'success': True, 'message': msg, 'earliestRestDate': earliest_rest})

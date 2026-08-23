@@ -955,8 +955,8 @@ def get_message_by_id(msg_id: int) -> dict | None:
 
 def list_messages_for_user(user_id: int, limit: int = 50, unread_only: bool = False) -> list[dict]:
     conn = get_db()
-    sql = 'SELECT * FROM messages WHERE recipient_id = ?'
-    params = [user_id]
+    sql = 'SELECT * FROM messages WHERE recipient_id = ? AND (alert_type IS NULL OR alert_type != ?)'
+    params = [user_id, 'substitution']
     if unread_only:
         sql += ' AND read_at IS NULL'
     sql += ' ORDER BY created_at DESC LIMIT ?'
@@ -969,8 +969,8 @@ def list_messages_for_user(user_id: int, limit: int = 50, unread_only: bool = Fa
 def list_messages_from_user(user_id: int, limit: int = 50) -> list[dict]:
     conn = get_db()
     rows = conn.execute(
-        'SELECT * FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT ?',
-        (user_id, limit)
+        'SELECT * FROM messages WHERE sender_id = ? AND (alert_type IS NULL OR alert_type != ?) ORDER BY created_at DESC LIMIT ?',
+        (user_id, 'substitution', limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -980,11 +980,12 @@ def list_conversation(user_id: int, other_user_id: int, limit: int = 200) -> lis
     conn = get_db()
     rows = conn.execute(
         '''SELECT * FROM messages
-           WHERE (sender_id = ? AND recipient_id = ?)
-              OR (sender_id = ? AND recipient_id = ?)
+           WHERE ((sender_id = ? AND recipient_id = ?)
+              OR (sender_id = ? AND recipient_id = ?))
+             AND (alert_type IS NULL OR alert_type != ?)
            ORDER BY created_at ASC
            LIMIT ?''',
-        (user_id, other_user_id, other_user_id, user_id, limit)
+        (user_id, other_user_id, other_user_id, user_id, 'substitution', limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1010,8 +1011,8 @@ def mark_message_read(msg_id: int, user_id: int) -> dict | None:
 def count_unread(user_id: int) -> int:
     conn = get_db()
     row = conn.execute(
-        'SELECT COUNT(*) AS c FROM messages WHERE recipient_id = ? AND read_at IS NULL',
-        (user_id,)
+        'SELECT COUNT(*) AS c FROM messages WHERE recipient_id = ? AND read_at IS NULL AND (alert_type IS NULL OR alert_type != ?)',
+        (user_id, 'substitution')
     ).fetchone()
     conn.close()
     return row['c'] if row else 0
@@ -1193,89 +1194,12 @@ def coach_approve_substitution_request(req_id: int, coach_id: int, approve: bool
 
 
 def notify_substitution_event(req: dict, event: str) -> None:
-    """Send in-app messages about substitution status changes.
+    """Substitution status updates are surfaced in the Substitution tab only.
 
-    Events: created, teammate_accepted, teammate_rejected, coach_approved, coach_rejected.
+    They are intentionally NOT converted into Messages entries, because the
+    Messages tab is reserved for direct coach-athlete communication.
     """
-    requester_id = req['requesterId']
-    substitute_id = req.get('substituteId')
-    coach_id = req['coachId']
-    date = req['trainingDate']
-    position = req['position']
-    reason = req.get('reason', '')
-
-    requester = get_user_by_id(requester_id)
-    substitute = get_user_by_id(substitute_id) if substitute_id else None
-    substitute_name = substitute['name'] if substitute else 'a teammate'
-
-    if event == 'created':
-        if substitute_id:
-            create_message(
-                requester_id, substitute_id,
-                f"{requester['name']} is requesting a substitution for {position} on {date}. Reason: {reason}. Can you cover this training?",
-                subject=f'Substitution request for {date}',
-                alert_type='substitution',
-            )
-        create_message(
-            requester_id, coach_id,
-            f"{requester['name']} requested a substitution for {position} on {date}. Waiting for {substitute_name} to respond.",
-            subject=f'Substitution request from {requester['name']}',
-            alert_type='substitution',
-        )
-    elif event == 'teammate_accepted':
-        create_message(
-            substitute_id, requester_id,
-            f"{substitute_name} accepted your substitution request for {date}. Waiting for coach approval.",
-            subject='Substitution accepted by teammate',
-            alert_type='substitution',
-        )
-        create_message(
-            substitute_id, coach_id,
-            f"{substitute_name} accepted covering {position} for {requester['name']} on {date}. Please approve or reject.",
-            subject='Substitution awaiting coach approval',
-            alert_type='substitution',
-        )
-    elif event == 'teammate_rejected':
-        create_message(
-            substitute_id, requester_id,
-            f"{substitute_name} declined your substitution request for {date}. Please contact your coach.",
-            subject='Substitution declined',
-            alert_type='substitution',
-        )
-        create_message(
-            substitute_id, coach_id,
-            f"{substitute_name} declined covering {position} for {requester['name']} on {date}.",
-            subject='Substitution declined',
-            alert_type='substitution',
-        )
-    elif event == 'coach_approved':
-        create_message(
-            coach_id, requester_id,
-            f"Coach approved your substitution for {date}. {substitute_name} will cover your {position} spot.",
-            subject='Substitution approved',
-            alert_type='substitution',
-        )
-        if substitute_id:
-            create_message(
-                coach_id, substitute_id,
-                f"Coach approved. You are confirmed to cover {position} for {requester['name']} on {date}.",
-                subject='Substitution confirmed',
-                alert_type='substitution',
-            )
-    elif event == 'coach_rejected':
-        create_message(
-            coach_id, requester_id,
-            f"Coach did not approve your substitution for {date}. You are expected to attend training.",
-            subject='Substitution not approved',
-            alert_type='substitution',
-        )
-        if substitute_id:
-            create_message(
-                coach_id, substitute_id,
-                f"Coach did not approve the substitution. You are not required to cover {position} on {date}.",
-                subject='Substitution not approved',
-                alert_type='substitution',
-            )
+    pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

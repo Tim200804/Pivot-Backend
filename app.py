@@ -25,6 +25,28 @@ from routes.interventions import interventions_bp
 from routes.substitutions import substitutions_bp
 
 
+def _get_allowed_origins():
+    """Return the list of allowed frontend origins for CORS.
+
+    Defaults cover the new pivotteam.online domain, the existing WorkBuddy
+    deployment, and local Vite dev. Additional origins can be appended via the
+    FRONTEND_URL environment variable (e.g. https://app.pivotteam.online).
+    """
+    defaults = [
+        "https://app.pivotteam.online",
+        "https://www.pivotteam.online",
+        "https://pivotteam.online",
+        "https://4e82b64fd89b4d3b96c1b079cad682db.app.codebuddy.work",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    extra = (os.environ.get('FRONTEND_URL') or '').strip()
+    if extra:
+        defaults.append(extra.rstrip('/'))
+    # Preserve order, remove duplicates.
+    return list(dict.fromkeys(defaults))
+
+
 def create_app():
     app = Flask(__name__)
 
@@ -32,11 +54,13 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key')
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 7 * 24 * 60 * 60  # 7 days in seconds
 
-    # Cross-origin: frontend (WorkBuddy / GitHub Pages) and API (Railway) are different origins.
+    allowed_origins = _get_allowed_origins()
+
+    # Cross-origin: frontend and API are different origins.
     CORS(
         app,
         resources={r"/*": {
-            "origins": "*",
+            "origins": allowed_origins,
             "allow_headers": ["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
             "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
             "expose_headers": ["Content-Type"],
@@ -46,14 +70,14 @@ def create_app():
     )
     JWTManager(app)
 
-    # Echo concrete Origin when present so any SPA host works (WorkBuddy, codebuddy, etc.)
+    # Echo the concrete Origin only when it is in the allow-list.
     @app.after_request
     def _apply_cors_fallback(response):
         origin = request.headers.get('Origin')
-        if origin:
+        if origin and origin in allowed_origins:
             response.headers['Access-Control-Allow-Origin'] = origin
             response.headers['Vary'] = 'Origin'
-        else:
+        elif not origin:
             response.headers['Access-Control-Allow-Origin'] = '*'
 
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'

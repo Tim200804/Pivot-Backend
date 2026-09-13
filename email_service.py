@@ -50,7 +50,7 @@ If you didn't request a password reset, you can safely ignore this email.
     return text_body, html_body
 
 
-DEFAULT_EMAIL_FROM = 'Pivot <noreply@internmatch.blog>'
+DEFAULT_EMAIL_FROM = 'Pivot <noreply@pivotteam.online>'
 
 
 def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:

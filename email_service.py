@@ -60,7 +60,7 @@ def send_reset_email(to_email: str, code: str, user_name: str = None) -> bool:
 
     Env vars:
       RESEND_API_KEY  — required in production
-      EMAIL_FROM      — optional override; defaults to Pivot <noreply@internmatch.blog>
+      EMAIL_FROM      — optional override; defaults to Pivot <noreply@pivotteam.online>
 
     Without RESEND_API_KEY, logs the code (local/dev fallback) and returns True.
     """

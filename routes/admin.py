@@ -15,7 +15,11 @@ from functools import wraps
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 
-from models import get_db
+from models import (
+    get_db, get_user_by_id, list_users as _list_all_users,
+    create_health_metric, get_health_metric_by_id,
+    health_metric_to_public,
+)
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -455,5 +459,221 @@ def preview_import():
             })
 
         return jsonify({'success': True, 'preview': preview, 'total': len(preview)})
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Health metrics management
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Columns that can be edited through the admin dashboard.
+_HEALTH_FIELDS = [
+    'date', 'hrv', 'rhr', 'sleep_hours', 'sleep_deep_pct', 'sleep_rem_pct',
+    'spo2', 'respiratory_rate', 'skin_temp',
+]
+
+
+def _float_or_none(val):
+    if val is None or val == '':
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+@admin_bp.route('/api/admin/health-metrics', methods=['GET'])
+@_admin_required
+def list_health_metrics_admin():
+    """List health metrics with optional user filter and pagination."""
+    conn = get_db()
+    try:
+        user_id = request.args.get('user_id', '').strip()
+        search = request.args.get('search', '').strip()
+        sort_col, sort_desc = _parse_sort(request.args.get('sort', '-date'))
+        if sort_col not in _HEALTH_FIELDS and sort_col != 'id':
+            sort_col = 'date'
+        page = max(1, int(request.args.get('page', 1)))
+        per_page = min(100, max(1, int(request.args.get('per_page', 20))))
+
+        where_clauses = []
+        params = []
+
+        if user_id:
+            where_clauses.append('hm.user_id = ?')
+            params.append(int(user_id))
+        if search:
+            where_clauses.append('(u.name LIKE ? OR u.email LIKE ? OR hm.date LIKE ?)')
+            like = f'%{search}%'
+            params.extend([like, like, like])
+
+        where_sql = ('WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+
+        # Count total
+        count_sql = f"""
+            SELECT COUNT(*) AS c
+            FROM health_metrics hm
+            JOIN users u ON u.id = hm.user_id
+            {where_sql}
+        """
+        total_row = conn.execute(count_sql, tuple(params)).fetchone()
+        total = total_row['c'] if total_row else 0
+
+        # Fetch page
+        order = 'DESC' if sort_desc else 'ASC'
+        offset = (page - 1) * per_page
+        query = f"""
+            SELECT hm.id, hm.user_id, hm.date, hm.hrv, hm.rhr, hm.sleep_hours,
+                   hm.sleep_deep_pct, hm.sleep_rem_pct, hm.spo2,
+                   hm.respiratory_rate, hm.skin_temp, hm.source, hm.created_at,
+                   u.name AS user_name, u.email AS user_email
+            FROM health_metrics hm
+            JOIN users u ON u.id = hm.user_id
+            {where_sql}
+            ORDER BY {sort_col} {order}
+            LIMIT ? OFFSET ?
+        """
+        rows = conn.execute(query, tuple(params + [per_page, offset])).fetchall()
+        metrics = [_row_to_dict(r) for r in rows]
+
+        return jsonify({
+            'success': True,
+            'metrics': metrics,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'total_pages': (total + per_page - 1) // per_page,
+            }
+        })
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics/<int:metric_id>', methods=['GET'])
+@_admin_required
+def get_health_metric_admin(metric_id):
+    """Get a single health metric by ID."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT hm.id, hm.user_id, hm.date, hm.hrv, hm.rhr, hm.sleep_hours,
+                      hm.sleep_deep_pct, hm.sleep_rem_pct, hm.spo2,
+                      hm.respiratory_rate, hm.skin_temp, hm.source, hm.created_at,
+                      u.name AS user_name, u.email AS user_email
+               FROM health_metrics hm
+               JOIN users u ON u.id = hm.user_id
+               WHERE hm.id = ?""",
+            (metric_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Metric not found'}), 404
+        return jsonify({'success': True, 'metric': _row_to_dict(row)})
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics', methods=['POST'])
+@_admin_required
+def create_health_metric_admin():
+    """Create a new health metric entry for an athlete."""
+    body = request.get_json(silent=True) or {}
+    user_id = body.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'message': 'user_id is required'}), 400
+
+    user = get_user_by_id(int(user_id))
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if user['role'] != 'athlete':
+        return jsonify({'success': False, 'message': 'Health metrics can only be assigned to athletes'}), 400
+
+    data = {
+        'date': body.get('date'),
+        'hrv': _float_or_none(body.get('hrv')),
+        'rhr': _float_or_none(body.get('rhr')),
+        'sleepHours': _float_or_none(body.get('sleep_hours')),
+        'sleepDeep': _float_or_none(body.get('sleep_deep_pct')),
+        'sleepREM': _float_or_none(body.get('sleep_rem_pct')),
+        'spo2': _float_or_none(body.get('spo2')),
+        'respiratoryRate': _float_or_none(body.get('respiratory_rate')),
+        'skinTemp': _float_or_none(body.get('skin_temp')),
+        'source': body.get('source') or 'admin',
+    }
+
+    metric = create_health_metric(int(user_id), data)
+    return jsonify({'success': True, 'metric': health_metric_to_public(metric)}), 201
+
+
+@admin_bp.route('/api/admin/health-metrics/<int:metric_id>', methods=['PUT'])
+@_admin_required
+def update_health_metric_admin(metric_id):
+    """Update an existing health metric entry."""
+    body = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        row = conn.execute('SELECT id FROM health_metrics WHERE id = ?', (metric_id,)).fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Metric not found'}), 404
+
+        allowed_fields = {
+            'date': body.get('date'),
+            'hrv': _float_or_none(body.get('hrv')),
+            'rhr': _float_or_none(body.get('rhr')),
+            'sleep_hours': _float_or_none(body.get('sleep_hours')),
+            'sleep_deep_pct': _float_or_none(body.get('sleep_deep_pct')),
+            'sleep_rem_pct': _float_or_none(body.get('sleep_rem_pct')),
+            'spo2': _float_or_none(body.get('spo2')),
+            'respiratory_rate': _float_or_none(body.get('respiratory_rate')),
+            'skin_temp': _float_or_none(body.get('skin_temp')),
+        }
+
+        updates = {k: v for k, v in allowed_fields.items() if v is not None or (body.get(k) is not None and body.get(k) == '')}
+        # Allow explicit null by checking if key exists in body.
+        for k in allowed_fields:
+            if k in body:
+                updates[k] = allowed_fields[k]
+
+        if not updates:
+            return jsonify({'success': False, 'message': 'No valid fields to update'}), 400
+
+        updates['updated_at'] = datetime.utcnow().isoformat()
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(
+            f'UPDATE health_metrics SET {set_clause} WHERE id = ?',
+            tuple(updates.values()) + (metric_id,)
+        )
+        conn.commit()
+
+        metric = get_health_metric_by_id(metric_id)
+        return jsonify({'success': True, 'metric': health_metric_to_public(metric)})
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics/<int:metric_id>', methods=['DELETE'])
+@_admin_required
+def delete_health_metric_admin(metric_id):
+    """Delete a health metric entry."""
+    conn = get_db()
+    try:
+        conn.execute('DELETE FROM health_metrics WHERE id = ?', (metric_id,))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Metric deleted'})
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics/athletes', methods=['GET'])
+@_admin_required
+def list_athletes_for_metrics():
+    """Return a lightweight list of athletes for the metrics filter dropdown."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, email FROM users WHERE role = 'athlete' ORDER BY name"
+        ).fetchall()
+        return jsonify({'success': True, 'athletes': [_row_to_dict(r) for r in rows]})
     finally:
         conn.close()

@@ -13,7 +13,7 @@ import csv
 from datetime import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 
 from models import get_db
 
@@ -33,14 +33,16 @@ ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'PivotAdmin2026!')
 def _admin_required(fn):
     """Decorator that ensures the caller is authenticated as admin.
     
-    We reuse flask_jwt_extended but verify the identity payload contains
+    We reuse flask_jwt_extended but verify the token contains the custom claim
     role == 'admin' to keep admin sessions separate from athlete/coach.
+    The identity is a plain username string, which flask_jwt_extended requires.
     """
     @wraps(fn)
     @jwt_required()
     def wrapper(*args, **kwargs):
+        claims = get_jwt()
         identity = get_jwt_identity()
-        if not identity or identity.get('role') != 'admin':
+        if not identity or claims.get('role') != 'admin':
             return jsonify({'success': False, 'message': 'Admin access required'}), 403
         return fn(*args, **kwargs)
     return wrapper
@@ -76,7 +78,8 @@ def admin_login():
         return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
     token = create_access_token(
-        identity={'role': 'admin', 'username': username},
+        identity=username,
+        additional_claims={'role': 'admin'},
         expires_delta=None,  # no expiry for admin (or set long expiry)
     )
     return jsonify({
@@ -90,7 +93,14 @@ def admin_login():
 @_admin_required
 def admin_me():
     identity = get_jwt_identity()
-    return jsonify({'success': True, 'admin': identity})
+    claims = get_jwt()
+    return jsonify({
+        'success': True,
+        'admin': {
+            'username': identity,
+            'role': claims.get('role'),
+        }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

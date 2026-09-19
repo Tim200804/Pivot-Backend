@@ -286,6 +286,110 @@ def import_health_metrics():
     }), 201 if imported > 0 else 400
 
 
+@health_bp.route('/import-from-image', methods=['POST'])
+@jwt_required()
+def import_health_metrics_from_image():
+    """Extract health metrics from an uploaded screenshot using Kimi vision.
+
+    Request: multipart/form-data with:
+        - image: image file (png, jpg, etc.)
+        - user_id: optional integer, defaults to current user
+
+    Returns:
+        {
+            "success": true,
+            "imported": N,
+            "rows": [...],
+            "message": "..."
+        }
+    """
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    target_id = request.form.get('user_id') or me['id']
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'user_id must be an integer'}), 400
+
+    if not _can_access_target(me, target_id):
+        return jsonify({'success': False, 'message': 'Not authorized'}), 403
+
+    if 'image' not in request.files:
+        return jsonify({'success': False, 'message': 'image file is required'}), 400
+
+    file = request.files['image']
+    if not file or not file.filename:
+        return jsonify({'success': False, 'message': 'image file is required'}), 400
+
+    image_bytes = file.read()
+    if not image_bytes:
+        return jsonify({'success': False, 'message': 'image file is empty'}), 400
+
+    mime_type = file.mimetype or 'image/png'
+
+    # Import here to avoid circular import at module load time
+    from routes.ai import parse_health_metrics_from_image
+
+    result = parse_health_metrics_from_image(image_bytes, mime_type)
+    if not result['success']:
+        return jsonify({
+            'success': False,
+            'message': result['message'],
+            'raw_text': result.get('raw_text', ''),
+        }), 400
+
+    rows = result['rows']
+    if not rows:
+        return jsonify({
+            'success': True,
+            'imported': 0,
+            'rows': [],
+            'message': 'No usable health data found in the image',
+        }), 200
+
+    # Preview mode: return extracted rows without saving so the user can review.
+    preview = request.args.get('preview', 'false').lower() in ('1', 'true', 'yes')
+    if preview:
+        return jsonify({
+            'success': True,
+            'imported': 0,
+            'rows': rows,
+            'preview': True,
+            'message': f'Found {len(rows)} row(s) in image; review before saving',
+        }), 200
+
+    imported = 0
+    errors = []
+    for idx, row in enumerate(rows):
+        try:
+            metric = create_health_metric(target_id, {
+                'date': row['date'],
+                'hrv': row.get('hrv'),
+                'rhr': row.get('rhr'),
+                'sleepHours': row.get('sleepHours'),
+                'sleepDeep': row.get('sleepDeep'),
+                'sleepREM': row.get('sleepREM'),
+                'spo2': row.get('spo2'),
+                'respiratoryRate': row.get('respiratoryRate'),
+                'skinTemp': row.get('skinTemp'),
+                'source': 'image-import',
+            })
+            if metric:
+                imported += 1
+        except Exception as e:
+            errors.append(f'Row {idx + 1}: {str(e)}')
+
+    return jsonify({
+        'success': imported > 0,
+        'imported': imported,
+        'rows': rows,
+        'errors': errors,
+        'message': f'Imported {imported} row(s) from image' + (f'; {len(errors)} error(s)' if errors else ''),
+    }), 201 if imported > 0 else 400
+
+
 @health_bp.route('/sync', methods=['POST'])
 @jwt_required()
 def sync_health_records():

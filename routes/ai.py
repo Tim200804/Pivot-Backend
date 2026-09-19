@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from openai import OpenAI
-import os, json, re, time, traceback, threading
+import os, json, re, time, traceback, threading, base64, math
 
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 
@@ -364,3 +364,216 @@ def generate_substitution_support_text(athlete: dict, checkin: dict, earliest_re
     except Exception:
         traceback.print_exc()
         return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Vision-based health data extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _encode_image_to_data_uri(image_bytes: bytes, mime_type: str) -> str:
+    """Encode image bytes as a base64 data URI for Kimi vision input."""
+    b64 = base64.b64encode(image_bytes).decode('utf-8')
+    return f"data:{mime_type};base64,{b64}"
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown JSON code fences if present."""
+    text = (text or '').strip()
+    if text.startswith('```'):
+        # Drop first fence line
+        lines = text.splitlines()
+        if len(lines) > 1 and lines[0].strip().startswith('```'):
+            lines = lines[1:]
+        text = '\n'.join(lines).strip()
+    if text.endswith('```'):
+        lines = text.splitlines()
+        if lines and lines[-1].strip() == '```':
+            lines = lines[:-1]
+        text = '\n'.join(lines).strip()
+    # Strip leading "json" label if present
+    if text.lower().startswith('json'):
+        lines = text.splitlines()
+        if len(lines) > 1:
+            text = '\n'.join(lines[1:]).strip()
+    return text
+
+
+# Accepted image MIME types for Kimi vision
+_ALLOWED_IMAGE_TYPES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'image/bmp', 'image/heic', 'image/heif',
+}
+
+
+def parse_health_metrics_from_image(image_bytes: bytes, mime_type: str = 'image/png') -> dict:
+    """Extract daily health metrics from a screenshot using Kimi vision.
+
+    Args:
+        image_bytes: raw image bytes
+        mime_type: image MIME type (must be in Kimi vision supported list)
+
+    Returns:
+        dict with keys:
+            - success: bool
+            - rows: list of parsed metric dicts (empty on failure)
+            - raw_text: the raw model output (for debugging)
+            - message: human-readable status message
+    """
+    if mime_type.lower() not in _ALLOWED_IMAGE_TYPES:
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': '',
+            'message': f'Unsupported image type: {mime_type}. Supported: jpeg, png, gif, webp, bmp, heic, heif',
+        }
+
+    try:
+        _get_client()
+    except Exception as e:
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': '',
+            'message': f'AI client not configured: {str(e)}',
+        }
+
+    data_uri = _encode_image_to_data_uri(image_bytes, mime_type)
+
+    system_prompt = (
+        "You are a data extraction assistant for the Pivot athlete resilience platform. "
+        "Your job is to read screenshots of health/training data and return ONLY a valid JSON object. "
+        "Do not add explanations, markdown, or code fences."
+    )
+
+    user_prompt = (
+        "Extract daily health metrics from this screenshot. "
+        "The screenshot may show a table, chart, wearable app summary, or fitness tracking app screen. "
+        "Return a JSON object with this exact structure:\n"
+        "{\n"
+        "  \"rows\": [\n"
+        "    {\"date\": \"YYYY-MM-DD\", \"hrv\": 58, \"rhr\": 54, \"sleepHours\": 7.2, \"sleepDeep\": null, \"sleepREM\": null, \"spo2\": null, \"respiratoryRate\": null, \"skinTemp\": null},\n"
+        "    ...\n"
+        "  ]\n"
+        "}\n\n"
+        "Field rules:\n"
+        "- date: ISO-8601 format YYYY-MM-DD. If year is missing, use 2026.\n"
+        "- hrv: heart rate variability (usually a number 20-100). If not present, null.\n"
+        "- rhr: resting heart rate (usually 40-100 bpm). If not present, null.\n"
+        "- sleepHours: total sleep in hours (e.g. 7.5). If not present, null.\n"
+        "- sleepDeep: deep sleep percentage (0-100) or null.\n"
+        "- sleepREM: REM sleep percentage (0-100) or null.\n"
+        "- spo2: blood oxygen percentage (80-100) or null.\n"
+        "- respiratoryRate: breaths per minute (8-40) or null.\n"
+        "- skinTemp: skin temperature in Celsius or null.\n"
+        "\n"
+        "Only include rows where at least one numeric metric is readable. "
+        "If a metric is unclear, use null rather than guessing. "
+        "If no usable data is visible, return {\"rows\": []}."
+    )
+
+    try:
+        completion = _create_completion(
+            model='kimi-k3',
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'image_url', 'image_url': {'url': data_uri}},
+                        {'type': 'text', 'text': user_prompt},
+                    ],
+                },
+            ],
+            max_tokens=2000,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': '',
+            'message': f'AI vision request failed: {str(e)}',
+        }
+
+    raw_text = (completion.choices[0].message.content or '').strip()
+    cleaned = _strip_code_fences(raw_text)
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': raw_text,
+            'message': f'AI response was not valid JSON: {str(e)}',
+        }
+
+    if not isinstance(parsed, dict):
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': raw_text,
+            'message': 'AI response was not a JSON object',
+        }
+
+    rows = parsed.get('rows')
+    if not isinstance(rows, list):
+        return {
+            'success': False,
+            'rows': [],
+            'raw_text': raw_text,
+            'message': 'AI response did not contain a rows array',
+        }
+
+    # Normalize and lightly validate rows
+    normalized = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+
+        date_val = row.get('date')
+        if not date_val:
+            continue
+        date_str = str(date_val).strip()
+        # Basic ISO date validation / normalization
+        try:
+            from datetime import datetime as _dt
+            if len(date_str) == 8 and date_str.isdigit():
+                # YYYYMMDD
+                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            _dt.fromisoformat(date_str)
+        except Exception:
+            continue
+
+        def _num(val):
+            if val is None or val == '':
+                return None
+            try:
+                n = float(val)
+                return None if math.isnan(n) or math.isinf(n) else n
+            except (TypeError, ValueError):
+                return None
+
+        normalized_row = {
+            'date': date_str,
+            'hrv': _num(row.get('hrv')),
+            'rhr': _num(row.get('rhr')),
+            'sleepHours': _num(row.get('sleepHours')),
+            'sleepDeep': _num(row.get('sleepDeep')),
+            'sleepREM': _num(row.get('sleepREM')),
+            'spo2': _num(row.get('spo2')),
+            'respiratoryRate': _num(row.get('respiratoryRate')),
+            'skinTemp': _num(row.get('skinTemp')),
+        }
+
+        # Keep row if at least date + one numeric metric is present
+        if any(v is not None for k, v in normalized_row.items() if k != 'date'):
+            normalized.append(normalized_row)
+
+    return {
+        'success': True,
+        'rows': normalized,
+        'raw_text': raw_text,
+        'message': f'Extracted {len(normalized)} row(s) from image',
+    }

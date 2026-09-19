@@ -32,7 +32,13 @@ def _get_allowed_origins():
     Defaults cover the new pivotteam.online domain, the existing WorkBuddy
     deployment, and local Vite dev. Additional origins can be appended via the
     FRONTEND_URL environment variable (e.g. https://app.pivotteam.online).
+
+    Set CORS_ALLOW_ALL=true to allow any origin (reflects the incoming Origin
+    header). Useful for admin/spin-up frontends on changing subdomains.
     """
+    if os.environ.get('CORS_ALLOW_ALL', '').lower() in ('1', 'true', 'yes'):
+        return ['*']
+
     defaults = [
         "https://app.pivotteam.online",
         "https://www.pivotteam.online",
@@ -76,11 +82,13 @@ def create_app():
     )
     JWTManager(app)
 
-    # Echo the concrete Origin only when it is in the allow-list.
+    # Echo the concrete Origin when it is allowed, or reflect any origin in
+    # wildcard mode so admin frontends on changing subdomains still work.
     @app.after_request
     def _apply_cors_fallback(response):
         origin = request.headers.get('Origin')
-        if origin and origin in allowed_origins:
+        wildcard = '*' in allowed_origins
+        if origin and (wildcard or origin in allowed_origins):
             response.headers['Access-Control-Allow-Origin'] = origin
             response.headers['Vary'] = 'Origin'
         elif not origin:

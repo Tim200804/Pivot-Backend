@@ -677,3 +677,254 @@ def list_athletes_for_metrics():
         return jsonify({'success': True, 'athletes': [_row_to_dict(r) for r in rows]})
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Bulk health metrics import (CSV / Excel)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Acceptable column names (case-insensitive, spaces/underscores normalized).
+_BULK_METRIC_COLUMNS = {
+    'date': ['date'],
+    'user_id': ['user_id', 'userid', 'user id', 'athlete_id', 'athleteid'],
+    'email': ['email', 'athlete_email', 'user_email'],
+    'hrv': ['hrv'],
+    'rhr': ['rhr', 'resting_hr', 'restinghr'],
+    'sleep_hours': ['sleep_hours', 'sleephours', 'sleep hours', 'sleep'],
+    'sleep_deep_pct': ['sleep_deep_pct', 'sleepdeeppct', 'sleep_deep', 'deep_pct'],
+    'sleep_rem_pct': ['sleep_rem_pct', 'sleeprempct', 'sleep_rem', 'rem_pct'],
+    'spo2': ['spo2', 'spo2_pct'],
+    'respiratory_rate': ['respiratory_rate', 'respiratoryrate', 'resp_rate', 'resprate'],
+    'skin_temp': ['skin_temp', 'skintemp', 'skin_temperature'],
+}
+
+
+def _normalize_column_name(name):
+    """Normalize header for flexible matching."""
+    return str(name).lower().strip().replace(' ', '_').replace('-', '_')
+
+
+def _map_metric_columns(headers):
+    """Map raw headers to canonical field names."""
+    mapping = {}
+    for raw in headers:
+        norm = _normalize_column_name(raw)
+        for canonical, aliases in _BULK_METRIC_COLUMNS.items():
+            if norm in [_normalize_column_name(a) for a in aliases]:
+                mapping[raw] = canonical
+                break
+    return mapping
+
+
+def _parse_metric_file(file):
+    """Parse CSV or Excel into a list of row dicts."""
+    filename = file.filename.lower()
+    if filename.endswith('.csv'):
+        stream = io.StringIO(file.stream.read().decode('utf-8-sig'))
+        reader = csv.DictReader(stream)
+        return [_normalize_keys(row) for row in reader]
+    elif filename.endswith(('.xlsx', '.xls')):
+        try:
+            import pandas as pd
+        except ImportError:
+            raise RuntimeError('pandas not installed; cannot parse Excel files')
+        df = pd.read_excel(file.stream)
+        df = df.where(pd.notnull(df), None)
+        return [_normalize_keys(row) for row in df.to_dict('records')]
+    else:
+        raise ValueError('Only .csv, .xlsx, .xls supported')
+
+
+@admin_bp.route('/api/admin/health-metrics/import-preview', methods=['POST'])
+@_admin_required
+def preview_health_metrics_import():
+    """Validate a metrics import file without writing to DB."""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': 'No file uploaded'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'Empty filename'}), 400
+
+    try:
+        rows = _parse_metric_file(file)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Parse error: {str(e)}'}), 400
+
+    if not rows:
+        return jsonify({'success': False, 'message': 'No data rows found'}), 400
+
+    conn = get_db()
+    try:
+        col_map = _map_metric_columns(rows[0].keys())
+        has_date = 'date' in col_map.values()
+        has_user_id = 'user_id' in col_map.values() or 'email' in col_map.values()
+
+        preview = []
+        for idx, row in enumerate(rows, start=2):
+            issues = []
+            mapped = {}
+            for raw, canonical in col_map.items():
+                mapped[canonical] = row.get(raw)
+
+            date = str(mapped.get('date') or '').strip()
+            user_id = mapped.get('user_id')
+            email = str(mapped.get('email') or '').strip()
+
+            if not date:
+                issues.append('Missing date')
+            if user_id is None and not email:
+                issues.append('Missing user_id or email')
+
+            resolved_user = None
+            if user_id:
+                try:
+                    resolved_user = conn.execute(
+                        'SELECT id, name, email FROM users WHERE id = ? AND role = ?',
+                        (int(user_id), 'athlete')
+                    ).fetchone()
+                except (ValueError, TypeError):
+                    issues.append(f"Invalid user_id: '{user_id}'")
+            elif email:
+                resolved_user = conn.execute(
+                    'SELECT id, name, email FROM users WHERE email = ? AND role = ?',
+                    (email, 'athlete')
+                ).fetchone()
+
+            if not resolved_user:
+                if not issues:
+                    issues.append('Athlete not found')
+
+            preview.append({
+                'row': idx,
+                'date': date,
+                'user_id': resolved_user['id'] if resolved_user else (user_id or ''),
+                'user_name': resolved_user['name'] if resolved_user else '-',
+                'email': resolved_user['email'] if resolved_user else email,
+                'valid': len(issues) == 0,
+                'issues': issues,
+            })
+
+        return jsonify({
+            'success': True,
+            'preview': preview,
+            'total': len(preview),
+            'valid_count': sum(1 for p in preview if p['valid']),
+            'columns': list(col_map.values()),
+        })
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics/import', methods=['POST'])
+@_admin_required
+def import_health_metrics():
+    """Import health metrics from CSV or Excel file."""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': 'No file uploaded'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'Empty filename'}), 400
+
+    try:
+        rows = _parse_metric_file(file)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Parse error: {str(e)}'}), 400
+
+    if not rows:
+        return jsonify({'success': False, 'message': 'No data rows found'}), 400
+
+    col_map = _map_metric_columns(rows[0].keys())
+    if 'date' not in col_map.values():
+        return jsonify({'success': False, 'message': 'Required column "date" not found'}), 400
+    if 'user_id' not in col_map.values() and 'email' not in col_map.values():
+        return jsonify({'success': False, 'message': 'Required column "user_id" or "email" not found'}), 400
+
+    conn = get_db()
+    try:
+        created, skipped, errors = 0, 0, []
+
+        for idx, row in enumerate(rows, start=2):
+            mapped = {}
+            for raw, canonical in col_map.items():
+                mapped[canonical] = row.get(raw)
+
+            date = str(mapped.get('date') or '').strip()
+            user_id = mapped.get('user_id')
+            email = str(mapped.get('email') or '').strip()
+
+            if not date:
+                errors.append({'row': idx, 'reason': 'Missing date'})
+                continue
+
+            resolved_user = None
+            if user_id:
+                try:
+                    resolved_user = conn.execute(
+                        'SELECT id, role FROM users WHERE id = ?',
+                        (int(user_id),)
+                    ).fetchone()
+                except (ValueError, TypeError):
+                    errors.append({'row': idx, 'reason': f"Invalid user_id: '{user_id}'"})
+                    continue
+            elif email:
+                resolved_user = conn.execute(
+                    'SELECT id, role FROM users WHERE email = ?',
+                    (email,)
+                ).fetchone()
+
+            if not resolved_user:
+                errors.append({'row': idx, 'reason': 'Athlete not found'})
+                continue
+            if resolved_user['role'] != 'athlete':
+                errors.append({'row': idx, 'reason': 'User is not an athlete'})
+                continue
+
+            try:
+                create_health_metric(resolved_user['id'], {
+                    'date': date,
+                    'hrv': _float_or_none(mapped.get('hrv')),
+                    'rhr': _float_or_none(mapped.get('rhr')),
+                    'sleepHours': _float_or_none(mapped.get('sleep_hours')),
+                    'sleepDeep': _float_or_none(mapped.get('sleep_deep_pct')),
+                    'sleepREM': _float_or_none(mapped.get('sleep_rem_pct')),
+                    'spo2': _float_or_none(mapped.get('spo2')),
+                    'respiratoryRate': _float_or_none(mapped.get('respiratory_rate')),
+                    'skinTemp': _float_or_none(mapped.get('skin_temp')),
+                    'source': 'bulk_import',
+                })
+                created += 1
+            except Exception as e:
+                errors.append({'row': idx, 'reason': str(e)})
+
+        return jsonify({
+            'success': True,
+            'summary': {'created': created, 'skipped': skipped, 'errors': errors},
+        })
+    finally:
+        conn.close()
+
+
+@admin_bp.route('/api/admin/health-metrics/batch-delete', methods=['POST'])
+@_admin_required
+def batch_delete_health_metrics():
+    """Delete multiple health metrics by ID."""
+    body = request.get_json(silent=True) or {}
+    ids = body.get('ids', [])
+    if not ids or not isinstance(ids, list):
+        return jsonify({'success': False, 'message': 'ids array is required'}), 400
+
+    # Sanitize IDs
+    ids = [int(i) for i in ids if isinstance(i, int) or (isinstance(i, str) and i.isdigit())]
+    if not ids:
+        return jsonify({'success': False, 'message': 'No valid IDs provided'}), 400
+
+    placeholders = ', '.join('?' for _ in ids)
+    conn = get_db()
+    try:
+        conn.execute(f'DELETE FROM health_metrics WHERE id IN ({placeholders})', tuple(ids))
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{len(ids)} metric(s) deleted'})
+    finally:
+        conn.close()

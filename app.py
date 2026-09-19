@@ -23,6 +23,7 @@ from routes.health import health_bp
 from routes.alerts import alerts_bp
 from routes.interventions import interventions_bp
 from routes.substitutions import substitutions_bp
+from routes.admin import admin_bp
 
 
 def _get_allowed_origins():
@@ -39,10 +40,15 @@ def _get_allowed_origins():
         "https://4e82b64fd89b4d3b96c1b079cad682db.app.codebuddy.work",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ]
     extra = (os.environ.get('FRONTEND_URL') or '').strip()
     if extra:
         defaults.append(extra.rstrip('/'))
+    admin_url = (os.environ.get('ADMIN_FRONTEND_URL') or '').strip()
+    if admin_url:
+        defaults.append(admin_url.rstrip('/'))
     # Preserve order, remove duplicates.
     return list(dict.fromkeys(defaults))
 
@@ -94,6 +100,7 @@ def create_app():
     app.register_blueprint(alerts_bp)
     app.register_blueprint(interventions_bp)
     app.register_blueprint(substitutions_bp)
+    app.register_blueprint(admin_bp)
 
     # Health check
     @app.route('/api/health', methods=['GET'])

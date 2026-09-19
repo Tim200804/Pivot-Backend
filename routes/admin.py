@@ -16,7 +16,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 
 from models import (
-    get_db, get_user_by_id, list_users as _list_all_users,
+    get_db, get_user_by_id,
     create_health_metric, get_health_metric_by_id,
     health_metric_to_public,
 )

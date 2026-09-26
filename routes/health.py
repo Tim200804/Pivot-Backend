@@ -9,6 +9,7 @@ from models import (
     get_latest_health_summary, get_team_summary,
     get_training_impact, get_training_health_correlation,
     generate_training_adjustment_suggestion,
+    get_health_metric_for_date,
 )
 
 health_bp = Blueprint('health', __name__, url_prefix='/api/health')
@@ -286,19 +287,57 @@ def import_health_metrics():
     }), 201 if imported > 0 else 400
 
 
+@health_bp.route('/metrics/me', methods=['GET'])
+@jwt_required()
+def get_my_health_metric_for_date():
+    """Return the current athlete's health metric for a specific date.
+
+    Query params:
+        date: YYYY-MM-DD
+
+    Returns the existing row or a placeholder object so the manual entry form
+    can pre-fill previously recorded values.
+    """
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if me['role'] != 'athlete':
+        return jsonify({'success': False, 'message': 'Only athletes can use manual entry here'}), 403
+
+    date = request.args.get('date')
+    if not date:
+        return jsonify({'success': False, 'message': 'date query param is required'}), 400
+    try:
+        from datetime import date as _date
+        _date.fromisoformat(date)
+    except ValueError:
+        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
+
+    from models import get_health_metric_for_date
+    metric = get_health_metric_for_date(me['id'], date)
+    if metric:
+        return jsonify({'success': True, 'metric': health_metric_to_public(metric)}), 200
+    return jsonify({
+        'success': True,
+        'metric': {'date': date, 'hrv': None, 'rhr': None, 'sleepHours': None, 'source': None},
+    }), 200
+
+
 @health_bp.route('/metrics/me', methods=['POST'])
 @jwt_required()
 def post_my_health_metric():
-    """Create or overwrite a single daily health metric entry for the current athlete.
+    """Create or overwrite a daily health metric entry for the current athlete.
 
     Request body:
         {
             "date": "2026-09-26",
-            "metricType": "hrv",      // hrv | rhr | sleepHours
-            "value": 58
+            "hrv": 58,            // optional
+            "rhr": 54,            // optional
+            "sleepHours": 7.2     // optional
         }
 
-    Only athletes may record metrics for themselves via this endpoint.
+    Any metric not provided is left unchanged if a row already exists for the
+    date. Missing fields on a new row are stored as NULL. Athletes only.
     """
     me = get_user_by_id(int(get_jwt_identity()))
     if not me:
@@ -308,22 +347,9 @@ def post_my_health_metric():
 
     data = request.get_json() or {}
     date = data.get('date')
-    metric_type = data.get('metricType')
-    value = data.get('value')
-
     if not date:
         return jsonify({'success': False, 'message': 'Date is required'}), 400
-    if metric_type not in ('hrv', 'rhr', 'sleepHours'):
-        return jsonify({'success': False, 'message': 'metricType must be hrv, rhr, or sleepHours'}), 400
-    try:
-        import math
-        value = float(value)
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError
-    except (TypeError, ValueError, AttributeError):
-        return jsonify({'success': False, 'message': 'value must be a positive number'}), 400
 
-    # Prevent future dates
     try:
         from datetime import date as _date
         parsed = _date.fromisoformat(date)
@@ -332,7 +358,30 @@ def post_my_health_metric():
     except ValueError:
         return jsonify({'success': False, 'message': 'Invalid date format'}), 400
 
-    payload = {'date': date, metric_type: value, 'source': 'manual'}
+    import math
+
+    def _parse_value(value, name):
+        if value is None or value == '':
+            return None
+        try:
+            value = float(value)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError
+            return value
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError(f'{name} must be a positive number')
+
+    try:
+        payload = {'date': date, 'source': 'manual'}
+        for key in ('hrv', 'rhr', 'sleepHours'):
+            if key in data:
+                payload[key] = _parse_value(data[key], key)
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    if 'hrv' not in payload and 'rhr' not in payload and 'sleepHours' not in payload:
+        return jsonify({'success': False, 'message': 'At least one metric is required'}), 400
+
     metric = create_health_metric(me['id'], payload)
     return jsonify({
         'success': True,

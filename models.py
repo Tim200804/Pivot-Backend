@@ -1461,6 +1461,16 @@ def get_health_metric_by_id(metric_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def get_health_metric_for_date(user_id: int, date: str) -> dict | None:
+    conn = get_db()
+    row = conn.execute(
+        'SELECT * FROM health_metrics WHERE user_id = ? AND date = ?',
+        (user_id, date)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def list_health_metrics(user_id: int, limit: int = 180) -> list[dict]:
     conn = get_db()
     rows = conn.execute(

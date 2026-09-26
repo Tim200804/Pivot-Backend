@@ -382,7 +382,7 @@ def post_my_health_metric():
     if 'hrv' not in payload and 'rhr' not in payload and 'sleepHours' not in payload:
         return jsonify({'success': False, 'message': 'At least one metric is required'}), 400
 
-    metric = create_health_metric(me['id'], payload)
+    metric = create_health_metric(me['id'], payload, partial=True)
     return jsonify({
         'success': True,
         'metric': health_metric_to_public(metric),

@@ -1429,12 +1429,23 @@ def get_checkin_for_date(user_id: int, date: str) -> dict | None:
 #  Health Metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def create_health_metric(user_id: int, data: dict) -> dict:
+def create_health_metric(user_id: int, data: dict, partial: bool = False) -> dict:
     now = datetime.utcnow().isoformat()
     date = data.get('date') or now[:10]
     conn = get_db()
     cursor = conn.cursor()
     is_mysql = conn._is_mysql
+
+    if partial:
+        existing = get_health_metric_for_date(user_id, date)
+        if existing:
+            merged = dict(existing)
+            for key in ['hrv', 'rhr', 'sleepHours', 'sleepDeep', 'sleepREM', 'spo2', 'respiratoryRate', 'skinTemp', 'source']:
+                if key in data and data[key] is not None:
+                    merged[key] = data[key]
+            merged['date'] = date
+            data = merged
+
     sql = _upsert_sql(
         'health_metrics',
         ['user_id', 'date', 'hrv', 'rhr', 'sleep_hours', 'sleep_deep_pct', 'sleep_rem_pct',

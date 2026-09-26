@@ -1436,15 +1436,36 @@ def create_health_metric(user_id: int, data: dict, partial: bool = False) -> dic
     cursor = conn.cursor()
     is_mysql = conn._is_mysql
 
+    # Start with caller-provided values.
+    hrv = data.get('hrv')
+    rhr = data.get('rhr')
+    sleep_hours = data.get('sleepHours')
+    sleep_deep = data.get('sleepDeep')
+    sleep_rem = data.get('sleepREM')
+    spo2 = data.get('spo2')
+    respiratory_rate = data.get('respiratoryRate')
+    skin_temp = data.get('skinTemp')
+    source = data.get('source', 'manual')
+
     if partial:
+        # Preserve existing values for fields the caller did not supply. The
+        # row returned from the DB uses snake_case column names.
         existing = get_health_metric_for_date(user_id, date)
         if existing:
-            merged = dict(existing)
-            for key in ['hrv', 'rhr', 'sleepHours', 'sleepDeep', 'sleepREM', 'spo2', 'respiratoryRate', 'skinTemp', 'source']:
-                if key in data and data[key] is not None:
-                    merged[key] = data[key]
-            merged['date'] = date
-            data = merged
+            def _pick(in_key: str, db_key: str):
+                if in_key in data and data[in_key] is not None:
+                    return data[in_key]
+                return existing.get(db_key)
+
+            hrv = _pick('hrv', 'hrv')
+            rhr = _pick('rhr', 'rhr')
+            sleep_hours = _pick('sleepHours', 'sleep_hours')
+            sleep_deep = _pick('sleepDeep', 'sleep_deep_pct')
+            sleep_rem = _pick('sleepREM', 'sleep_rem_pct')
+            spo2 = _pick('spo2', 'spo2')
+            respiratory_rate = _pick('respiratoryRate', 'respiratory_rate')
+            skin_temp = _pick('skinTemp', 'skin_temp')
+            source = data.get('source') or existing.get('source') or 'manual'
 
     sql = _upsert_sql(
         'health_metrics',
@@ -1455,14 +1476,13 @@ def create_health_metric(user_id: int, data: dict, partial: bool = False) -> dic
          'spo2', 'respiratory_rate', 'skin_temp', 'source'],
         is_mysql,
     )
-    cursor.execute(sql, (user_id, date,
-                         data.get('hrv'), data.get('rhr'), data.get('sleepHours'), data.get('sleepDeep'),
-                         data.get('sleepREM'), data.get('spo2'), data.get('respiratoryRate'),
-                         data.get('skinTemp'), data.get('source', 'manual'), now))
-    row_id = cursor.lastrowid
+    cursor.execute(sql, (user_id, date, hrv, rhr, sleep_hours, sleep_deep, sleep_rem,
+                         spo2, respiratory_rate, skin_temp, source, now))
     conn.commit()
     conn.close()
-    return get_health_metric_by_id(row_id)
+    # MySQL cursor.lastrowid is 0 when an existing row is updated by
+    # ON DUPLICATE KEY UPDATE, so fetch the canonical row by user_id + date.
+    return get_health_metric_for_date(user_id, date)
 
 
 def get_health_metric_by_id(metric_id: int) -> dict | None:

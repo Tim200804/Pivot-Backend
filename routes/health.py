@@ -290,13 +290,16 @@ def import_health_metrics():
 @health_bp.route('/metrics/me', methods=['GET'])
 @jwt_required()
 def get_my_health_metric_for_date():
-    """Return the current athlete's health metric for a specific date.
+    """Return the current athlete's health metrics.
 
-    Query params:
-        date: YYYY-MM-DD
+    Supports two modes:
+        - ?date=YYYY-MM-DD: return a single day's metric (used by manual entry
+          pre-fill). Returns an empty placeholder if no row exists.
+        - ?limit=N (or no params): return the most recent N metrics (default 30).
 
-    Returns the existing row or a placeholder object so the manual entry form
-    can pre-fill previously recorded values.
+    This single endpoint replaces the previous /metrics/<id> list for the
+    logged-in athlete so both the history table and the date pre-fill share
+    one route.
     """
     me = get_user_by_id(int(get_jwt_identity()))
     if not me:
@@ -305,21 +308,27 @@ def get_my_health_metric_for_date():
         return jsonify({'success': False, 'message': 'Only athletes can use manual entry here'}), 403
 
     date = request.args.get('date')
-    if not date:
-        return jsonify({'success': False, 'message': 'date query param is required'}), 400
-    try:
-        from datetime import date as _date
-        _date.fromisoformat(date)
-    except ValueError:
-        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
+    if date:
+        try:
+            from datetime import date as _date
+            _date.fromisoformat(date)
+        except ValueError:
+            return jsonify({'success': False, 'message': 'Invalid date format'}), 400
 
-    from models import get_health_metric_for_date
-    metric = get_health_metric_for_date(me['id'], date)
-    if metric:
-        return jsonify({'success': True, 'metric': health_metric_to_public(metric)}), 200
+        from models import get_health_metric_for_date
+        metric = get_health_metric_for_date(me['id'], date)
+        if metric:
+            return jsonify({'success': True, 'metric': health_metric_to_public(metric)}), 200
+        return jsonify({
+            'success': True,
+            'metric': {'date': date, 'hrv': None, 'rhr': None, 'sleepHours': None, 'source': None},
+        }), 200
+
+    limit = min(int(request.args.get('limit', 30)), 365)
+    rows = list_health_metrics(me['id'], limit=limit)
     return jsonify({
         'success': True,
-        'metric': {'date': date, 'hrv': None, 'rhr': None, 'sleepHours': None, 'source': None},
+        'metrics': [health_metric_to_public(r) for r in rows],
     }), 200
 
 

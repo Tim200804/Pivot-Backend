@@ -286,6 +286,59 @@ def import_health_metrics():
     }), 201 if imported > 0 else 400
 
 
+@health_bp.route('/metrics/me', methods=['POST'])
+@jwt_required()
+def post_my_health_metric():
+    """Create or overwrite a single daily health metric entry for the current athlete.
+
+    Request body:
+        {
+            "date": "2026-09-26",
+            "metricType": "hrv",      // hrv | rhr | sleepHours
+            "value": 58
+        }
+
+    Only athletes may record metrics for themselves via this endpoint.
+    """
+    me = get_user_by_id(int(get_jwt_identity()))
+    if not me:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    if me['role'] != 'athlete':
+        return jsonify({'success': False, 'message': 'Only athletes can use manual entry here'}), 403
+
+    data = request.get_json() or {}
+    date = data.get('date')
+    metric_type = data.get('metricType')
+    value = data.get('value')
+
+    if not date:
+        return jsonify({'success': False, 'message': 'Date is required'}), 400
+    if metric_type not in ('hrv', 'rhr', 'sleepHours'):
+        return jsonify({'success': False, 'message': 'metricType must be hrv, rhr, or sleepHours'}), 400
+    try:
+        value = float(value)
+        if not Number.isfinite(value) or value <= 0:
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({'success': False, 'message': 'value must be a positive number'}), 400
+
+    # Prevent future dates
+    try:
+        from datetime import date as _date
+        parsed = _date.fromisoformat(date)
+        if parsed > _date.today():
+            return jsonify({'success': False, 'message': 'Date cannot be in the future'}), 400
+    except ValueError:
+        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
+
+    payload = {'date': date, metric_type: value, 'source': 'manual'}
+    metric = create_health_metric(me['id'], payload)
+    return jsonify({
+        'success': True,
+        'metric': health_metric_to_public(metric),
+    }), 201
+
+
 @health_bp.route('/import-from-image', methods=['POST'])
 @jwt_required()
 def import_health_metrics_from_image():

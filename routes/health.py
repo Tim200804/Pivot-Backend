@@ -316,8 +316,9 @@ def post_my_health_metric():
     if metric_type not in ('hrv', 'rhr', 'sleepHours'):
         return jsonify({'success': False, 'message': 'metricType must be hrv, rhr, or sleepHours'}), 400
     try:
+        import math
         value = float(value)
-        if not Number.isfinite(value) or value <= 0:
+        if not math.isfinite(value) or value <= 0:
             raise ValueError
     except (TypeError, ValueError, AttributeError):
         return jsonify({'success': False, 'message': 'value must be a positive number'}), 400
